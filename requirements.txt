@@ -4,4 +4,3 @@ plotly
 openpyxl
 reportlab
 supabase
-pip install pystac-client rasterio shapely pyproj supabase pandas numpy
