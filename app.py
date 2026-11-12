@@ -315,7 +315,7 @@ def db_fetch_gps():
             all_rows = []
             offset = 0
             while True:
-                r = sb_client.table("piquetes_gps").select("*").order("orden", desc=False).range(offset, offset + 999).execute()
+                r = sb_client.table("piquetes_gps").select("*").order("id", desc=False).range(offset, offset + 999).execute()
                 if not r.data:
                     break
                 all_rows.extend(r.data)
@@ -1029,7 +1029,6 @@ with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
     st.caption("Trazado oficial en magenta de las 9 líneas LAT de Región Centro (Chaco, Corrientes y Formosa), con cálculo de distancias GPS, superficie en m² y hectáreas de desmonte.")
 
-    # Controles superiores del mapa
     cm1, cm2, cm3, cm4 = st.columns([2, 1.5, 1.5, 2])
     with cm1:
         mapa_linea_sel = st.selectbox(
@@ -1062,6 +1061,7 @@ with tab_mapa:
         st.warning("⚠️ Aún no hay coordenadas GPS cargadas en la base de datos. Subí tu archivo **`Base de datos piquetes.xlsm`** (o `piquetes_region_centro_gps.csv`) en el importador de abajo para cargar los 1.830 piquetes de la Región Centro.")
     else:
         df_map = df_gps_all.copy() if mapa_linea_sel.startswith("TODAS") else df_gps_all[df_gps_all["linea"] == mapa_linea_sel].copy()
+        df_map = df_map.sort_values(["linea", "orden"]).reset_index(drop=True)
 
         # Recalcular distancias exactas entre piquetes consecutivos de cada línea
         dist_m_list = []
@@ -1080,14 +1080,12 @@ with tab_mapa:
         df_map["hectareas"] = df_map["area_m2"] / 10000.0
         df_map["ha_limpias"] = df_map["hectareas"] * (df_map["pct_desmonte"].fillna(0.0) / 100.0)
 
-        # Cruzar con datos reales de Perfilado y PAT
         set_perf = set(zip(perf_ventana["sigla"], perf_ventana["piq_id"])) if not perf_ventana.empty else set()
         set_pat = set(zip(pat_ventana["sigla"], pat_ventana["piq_id"])) if not pat_ventana.empty else set()
 
         df_map["tiene_perf"] = [((r.linea, str(r.piquete).strip()) in set_perf) for r in df_map.itertuples()]
         df_map["tiene_pat"] = [((r.linea, str(r.piquete).strip()) in set_pat) for r in df_map.itertuples()]
 
-        # KPIs geométricos de la vista en el mapa
         km_vista = df_map["dist_m"].sum() / 1000.0
         m2_vista = df_map["area_m2"].sum()
         ha_vista = df_map["hectareas"].sum()
@@ -1101,7 +1099,7 @@ with tab_mapa:
         mk4.metric("Superficie Limpia (Desmonte)", f"{ha_limpias_vista:.2f} ha", f"{pct_limpio_vista:.1f}% limpio")
         mk5.metric("Piquetes Campo (Perf / PAT)", f"{int(df_map['tiene_perf'].sum())} / {int(df_map['tiene_pat'].sum())}")
 
-        # Construcción del Mapa Interactivo (Traza Magenta Región Centro)
+        # Construcción del Mapa Interactivo con go.Scattermap (Plotly 6+)
         fig_map = go.Figure()
 
         for sig, grp in df_map.groupby("linea", sort=False):
@@ -1116,8 +1114,7 @@ with tab_mapa:
                 for r in grp_ord.itertuples()
             ]
 
-            # Línea de traza en color Magenta oficial de Región Centro
-            fig_map.add_trace(go.Scattermapbox(
+            fig_map.add_trace(go.Scattermap(
                 lat=grp_ord["latitud"],
                 lon=grp_ord["longitud"],
                 mode="lines",
@@ -1126,7 +1123,6 @@ with tab_mapa:
                 hoverinfo="skip"
             ))
 
-            # Color de marcadores según la capa seleccionada
             if capa_operativa == "Avance Desmonte (%)":
                 colores_pts = ["#10B981" if p >= 80 else ("#F59E0B" if p > 0 else "#D946EF") for p in grp_ord["pct_desmonte"]]
             elif capa_operativa == "Perfilado Real (Campo)":
@@ -1136,7 +1132,7 @@ with tab_mapa:
             else:
                 colores_pts = "#C026D3"
 
-            fig_map.add_trace(go.Scattermapbox(
+            fig_map.add_trace(go.Scattermap(
                 lat=grp_ord["latitud"],
                 lon=grp_ord["longitud"],
                 mode="markers",
@@ -1152,7 +1148,7 @@ with tab_mapa:
         zoom_val = 7.2 if mapa_linea_sel.startswith("TODAS") else 9.5
 
         fig_map.update_layout(
-            mapbox=dict(
+            map=dict(
                 style=estilo_mapa,
                 center=dict(lat=centro_lat, lon=centro_lon),
                 zoom=zoom_val
@@ -1177,7 +1173,6 @@ with tab_mapa:
         "📐 Calculadora de Desmonte por Tramo (m² y Hectáreas)"
     ])
 
-    # 1. DECLARAR O EDITAR COORDENADAS MANUALMENTE
     with subtab_decl:
         st.markdown("##### 📍 Declarar Coordenadas GPS de Piquete (Latitud y Longitud)")
         with st.container(border=True):
@@ -1201,7 +1196,6 @@ with tab_mapa:
             with dc8:
                 d_pct = st.number_input("% Desmonte Vano", min_value=0.0, max_value=100.0, value=0.0, step=5.0, key="decl_pct")
 
-            # Calcular distancia automática contra el piquete anterior en esa línea si existe
             dist_calc_km = 0.0
             if not df_gps_all.empty:
                 sub_prev = df_gps_all[(df_gps_all["linea"] == d_linea) & (df_gps_all["orden"] == int(d_orden) - 1)]
@@ -1232,7 +1226,6 @@ with tab_mapa:
                     st.success(f"✅ Coordenada del Piquete {d_piq} ({d_linea}) guardada correctamente.")
                     st.rerun()
 
-    # 2. IMPORTADOR MASIVO DE EXCEL (BASE DE DATOS PIQUETES + DESMONTE LAT)
     with subtab_imp:
         col_i1, col_i2 = st.columns(2)
 
@@ -1293,7 +1286,6 @@ with tab_mapa:
                 try:
                     df_pct_xl = pd.read_excel(file_desm_xl, sheet_name="Porcentaje Piquetes", header=1)
                     col_p = df_pct_xl.columns[0]
-                    col_v = df_pct_xl.columns[1]
                     df_pct_xl = df_pct_xl.dropna(subset=[col_p]).copy()
 
                     mapa_pct = {}
@@ -1303,11 +1295,9 @@ with tab_mapa:
                         except Exception:
                             p_str = str(r[1]).strip()
                         val_raw = float(r[2]) if pd.notnull(r[2]) else 0.0
-                        # Si está en escala 0..1 (ej: 0.3 = 30%), pasarlo a 0..100
                         pct_100 = val_raw * 100.0 if val_raw <= 1.0 else val_raw
                         mapa_pct[p_str] = round(pct_100, 2)
 
-                    # Calcular resumen inmediato usando las coordenadas GPS de esa línea
                     sub_gps_l = df_gps_all[df_gps_all["linea"] == linea_desm_xl].sort_values("orden").copy() if not df_gps_all.empty else pd.DataFrame()
                     if sub_gps_l.empty:
                         st.warning(f"Primero cargá las coordenadas GPS de **{linea_desm_xl}** en el panel izquierdo.")
@@ -1323,7 +1313,6 @@ with tab_mapa:
                             tot_m += dm
                             limpio_m += dm * pct_i
 
-                        area_tot_m2 = tot_m * ancho_serv_sel
                         area_limpia_m2 = limpio_m * ancho_serv_sel
                         ha_limpia = area_limpia_m2 / 10000.0
                         pct_avance_tot = (limpio_m / tot_m * 100) if tot_m > 0 else 0.0
@@ -1336,7 +1325,6 @@ with tab_mapa:
 
                         if st.button("💾 Aplicar Avance al Mapa y Actualizar Plan ENRE", type="primary", use_container_width=True, key="btn_apply_desm_xl"):
                             db_update_pct_desmonte_linea(linea_desm_xl, mapa_pct)
-                            # Registrar o actualizar en plan_mantenimiento_enre
                             db_insert_registro({
                                 "anio": int(anio_sel),
                                 "linea": linea_desm_xl,
@@ -1358,7 +1346,6 @@ with tab_mapa:
                 except Exception as e:
                     st.error(f"Error procesando planilla de desmonte: {e}")
 
-    # 3. CALCULADORA GEOMÉTRICA POR TRAMO DE PIQUETES
     with subtab_calc:
         st.markdown("##### 📐 Calculadora de Distancia, Superficie (m²) y Hectáreas entre Piquetes")
         if df_gps_all.empty:
