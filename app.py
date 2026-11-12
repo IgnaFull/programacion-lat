@@ -74,7 +74,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO Y PARÁMETROS AEA 95301
+# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO, AEA 95301 Y CICLOS VEGETALES NEA
 # =============================================================================
 ANCHO_FRANJA_M = 22.0  # 11m izquierda + 11m derecha desde hilo de guardia (AEA 95301)
 FACTOR_HA_POR_KM = ANCHO_FRANJA_M * 1000.0 / 10000.0  # 2.2 ha por cada km lineal
@@ -89,6 +89,13 @@ CATALOGO_LAT = {
     "RES-SCA": {"tramo": "Resistencia (Chaco) / Santa Catalina (Corrientes)", "km": 42.00, "piquetes": 150, "color": "#8B5CF6"},
     "SCA-BVI": {"tramo": "Santa Catalina (Corrientes) / Bella Vista (Corrientes)", "km": 121.00, "piquetes": 463, "color": "#D946EF"},
     "BVI-GOY": {"tramo": "Bella Vista (Corrientes) / Goya (Corrientes)", "km": 77.70, "piquetes": 303, "color": "#EC4899"},
+}
+
+# Ciclos de rebrote vegetal en Región NEA (días base para invasión completa de franja)
+CICLOS_VEGETACION_DIAS = {
+    "Monte Nativo / Chilcal": 420,      # ~14 meses
+    "Bañado / Estero / Juncal": 540,    # ~18 meses
+    "Pastizal / Campo Abierto": 900,    # ~30 meses
 }
 
 LINEAS_SIGLAS = list(CATALOGO_LAT.keys())
@@ -171,6 +178,35 @@ def corregir_par_lat_lon(lat_val, lon_val):
     if lat < -45.0 and lon > -45.0:
         return lon, lat
     return lat, lon
+
+def calcular_limpieza_vigente(pct_base, fecha_limp_str, tipo_veg, fecha_objetivo):
+    """Calcula el % vigente de limpieza descontando el rebrote cíclico estacional NEA."""
+    pct_ini = float(pct_base or 0.0)
+    if pct_ini <= 0.0:
+        return 0.0
+    try:
+        s_fec = str(fecha_limp_str).strip()[:10]
+        if len(s_fec) == 10 and s_fec[4] == "-":
+            f_base = date(int(s_fec[:4]), int(s_fec[5:7]), int(s_fec[8:10]))
+        else:
+            f_base = date.today()
+    except Exception:
+        f_base = date.today()
+
+    dias_transcurridos = (fecha_objetivo - f_base).days
+    if dias_transcurridos <= 0:
+        return round(pct_ini, 1)
+
+    # Factor estacional NEA: en primavera/verano (Oct-Mar) el rebrote es 1.25x más rápido; en otoño/invierno 0.80x
+    mes_eval = fecha_objetivo.month
+    factor_estacional = 1.25 if mes_eval in [10, 11, 12, 1, 2, 3] else 0.80
+
+    ciclo_dias = CICLOS_VEGETACION_DIAS.get(str(tipo_veg), 420)
+    dias_efectivos = dias_transcurridos * factor_estacional
+    perdida_pct = (dias_efectivos / ciclo_dias) * 100.0
+
+    vigente = max(0.0, pct_ini - perdida_pct)
+    return round(vigente, 1)
 
 def parsear_fecha_semana(f_val):
     try:
@@ -286,6 +322,8 @@ def get_sqlite_conn():
             tipo TEXT DEFAULT '',
             estructura TEXT DEFAULT '',
             pct_desmonte REAL DEFAULT 0.0,
+            fecha_limpieza TEXT DEFAULT '',
+            tipo_vegetacion TEXT DEFAULT 'Monte Nativo / Chilcal',
             UNIQUE(linea, piquete)
         )
     """)
@@ -318,7 +356,11 @@ def db_fetch_plan():
     return df
 
 def db_fetch_gps():
-    cols = ["id", "linea", "piquete", "orden", "latitud", "longitud", "dist_km", "tipo", "estructura", "pct_desmonte"]
+    cols = [
+        "id", "linea", "piquete", "orden", "latitud", "longitud",
+        "dist_km", "tipo", "estructura", "pct_desmonte",
+        "fecha_limpieza", "tipo_vegetacion"
+    ]
     df = pd.DataFrame(columns=cols)
     if MODO_NUBE:
         try:
@@ -336,7 +378,14 @@ def db_fetch_gps():
                 df = pd.DataFrame(all_rows)
                 for c in cols:
                     if c not in df.columns:
-                        df[c] = 0.0 if c in ["dist_km", "pct_desmonte"] else ""
+                        if c in ["dist_km", "pct_desmonte"]:
+                            df[c] = 0.0
+                        elif c == "fecha_limpieza":
+                            df[c] = str(date.today())
+                        elif c == "tipo_vegetacion":
+                            df[c] = "Monte Nativo / Chilcal"
+                        else:
+                            df[c] = ""
                 df = df[cols]
         except Exception:
             return pd.DataFrame(columns=cols)
@@ -346,14 +395,14 @@ def db_fetch_gps():
         conn.close()
 
     if not df.empty:
-        # Aplicar orden natural por número de piquete para ubicar 3A, 44A, 111b en su posición física real
+        df["fecha_limpieza"] = df["fecha_limpieza"].fillna(str(date.today())).astype(str)
+        df["tipo_vegetacion"] = df["tipo_vegetacion"].fillna("Monte Nativo / Chilcal").astype(str)
         df["_nat_key"] = df["piquete"].apply(natural_piq_key)
         df = df.sort_values(["linea", "_nat_key"]).drop(columns=["_nat_key"]).reset_index(drop=True)
         df["orden"] = df.groupby("linea").cumcount() + 1
     return df
 
 def db_upsert_gps_batch(records):
-    """Guarda o actualiza piquetes GPS masivamente (Supabase o SQLite)."""
     if not records:
         return
     if MODO_NUBE:
@@ -362,14 +411,20 @@ def db_upsert_gps_batch(records):
                 sb_client.table("piquetes_gps").upsert(records[i:i+500], on_conflict="linea,piquete").execute()
             return
         except Exception as e:
-            st.error(f"Error guardando coordenadas GPS en Supabase (verificá que creaste la tabla piquetes_gps): {e}")
+            if "fecha_limpieza" in str(e) or "tipo_vegetacion" in str(e):
+                st.warning("⚠️ Ejecutá el script `ALTER TABLE public.piquetes_gps...` en Supabase para habilitar el guardado de fechas y tipo de vegetación.")
+                recs_fallback = [{k: v for k, v in r.items() if k not in ["fecha_limpieza", "tipo_vegetacion"]} for r in records]
+                for i in range(0, len(recs_fallback), 500):
+                    sb_client.table("piquetes_gps").upsert(recs_fallback[i:i+500], on_conflict="linea,piquete").execute()
+                return
+            st.error(f"Error guardando coordenadas GPS en Supabase: {e}")
             return
 
     conn = get_sqlite_conn()
     for r in records:
         conn.execute("""
-            INSERT INTO piquetes_gps (linea, piquete, orden, latitud, longitud, dist_km, tipo, estructura, pct_desmonte)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO piquetes_gps (linea, piquete, orden, latitud, longitud, dist_km, tipo, estructura, pct_desmonte, fecha_limpieza, tipo_vegetacion)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(linea, piquete) DO UPDATE SET
                 orden=excluded.orden,
                 latitud=excluded.latitud,
@@ -377,27 +432,38 @@ def db_upsert_gps_batch(records):
                 dist_km=excluded.dist_km,
                 tipo=excluded.tipo,
                 estructura=excluded.estructura,
-                pct_desmonte=excluded.pct_desmonte
+                pct_desmonte=excluded.pct_desmonte,
+                fecha_limpieza=excluded.fecha_limpieza,
+                tipo_vegetacion=excluded.tipo_vegetacion
         """, (
             r["linea"], r["piquete"], int(r["orden"]), float(r["latitud"]), float(r["longitud"]),
-            float(r.get("dist_km", 0.0)), str(r.get("tipo", "")), str(r.get("estructura", "")), float(r.get("pct_desmonte", 0.0))
+            float(r.get("dist_km", 0.0)), str(r.get("tipo", "")), str(r.get("estructura", "")),
+            float(r.get("pct_desmonte", 0.0)), str(r.get("fecha_limpieza", str(date.today()))),
+            str(r.get("tipo_vegetacion", "Monte Nativo / Chilcal"))
         ))
     conn.commit()
     conn.close()
 
-def db_update_pct_desmonte_linea(linea_sigla, mapa_pct_piq):
-    """Actualiza el % de desmonte por piquete para una línea."""
+def db_update_pct_desmonte_linea(linea_sigla, mapa_pct_piq, fecha_relev=None, tipo_veg="Monte Nativo / Chilcal"):
     df_curr = db_fetch_gps()
     sub = df_curr[df_curr["linea"] == linea_sigla].copy()
     if sub.empty:
         return 0
+    f_str = str(fecha_relev) if fecha_relev else str(date.today())
     recs = []
     actualizados = 0
     for row in sub.itertuples():
         piq_s = str(row.piquete).strip()
-        pct_val = mapa_pct_piq.get(piq_s, float(row.pct_desmonte or 0.0))
         if piq_s in mapa_pct_piq:
+            pct_val = mapa_pct_piq[piq_s]
+            f_usar = f_str
+            veg_usar = tipo_veg
             actualizados += 1
+        else:
+            pct_val = float(row.pct_desmonte or 0.0)
+            f_usar = str(row.fecha_limpieza or f_str)
+            veg_usar = str(row.tipo_vegetacion or tipo_veg)
+
         recs.append({
             "linea": row.linea,
             "piquete": piq_s,
@@ -407,7 +473,9 @@ def db_update_pct_desmonte_linea(linea_sigla, mapa_pct_piq):
             "dist_km": float(row.dist_km or 0.0),
             "tipo": str(row.tipo or ""),
             "estructura": str(row.estructura or ""),
-            "pct_desmonte": float(pct_val)
+            "pct_desmonte": float(pct_val),
+            "fecha_limpieza": f_usar,
+            "tipo_vegetacion": veg_usar
         })
     db_upsert_gps_batch(recs)
     return actualizados
@@ -756,7 +824,7 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
 # =============================================================================
 # 5. ENCABEZADO Y SELECTOR DE HORIZONTE TEMPORAL
 # =============================================================================
-estado_cloud_txt = "☁️ Conectado a Supabase (Perfilado + PAT + GPS en vivo)" if MODO_NUBE else "⚠️ Modo Local (Configurar Secrets)"
+estado_cloud_txt = "☁️ Conectado a Supabase (Perfilado + PAT + GPS + Satélite en vivo)" if MODO_NUBE else "⚠️ Modo Local (Configurar Secrets)"
 
 st.markdown(f"""
 <div class="banner-enre">
@@ -1038,13 +1106,13 @@ with tab_indicadores:
             st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
 
 # =============================================================================
-# PESTAÑA 2: MAPA DE RED (REGIÓN OPERATIVA CENTRO - COLOR POR LÍNEA + GPS)
+# PESTAÑA 2: MAPA DE RED (REGIÓN CENTRO + MOTOR DE REBROTE CÍCLICO + SATÉLITE)
 # =============================================================================
 with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
-    st.caption("Visualización diferenciada por color de las 9 líneas LAT de Región Centro (Chaco, Corrientes y Formosa), con ordenamiento natural de piquetes intercalados y cálculo de superficie.")
+    st.caption("Monitoreo geográfico en tiempo real integrado con Sentinel-2 (NDVI), modelo de rebrote cíclico estacional NEA y calibración de campo/dron.")
 
-    cm1, cm2, cm3, cm4 = st.columns([2, 1.5, 1.5, 2])
+    cm1, cm2, cm3, cm4, cm5 = st.columns([1.8, 1.4, 1.8, 1.6, 1.4])
     with cm1:
         mapa_linea_sel = st.selectbox(
             "⚡ Seleccionar Línea LAT:",
@@ -1053,27 +1121,42 @@ with tab_mapa:
         )
     with cm2:
         ancho_serv_sel = st.selectbox(
-            "📏 Ancho Franja Servidumbre:",
+            "📏 Ancho Franja:",
             options=[22.0, 25.0],
-            format_func=lambda w: f"{w:.0f} m (AEA 95301: 11+11m)" if w == 22.0 else f"{w:.0f} m (Salvoconducto: 12.5+12.5m)",
+            format_func=lambda w: f"{w:.0f} m (AEA 95301)" if w == 22.0 else f"{w:.0f} m (Salvoconducto)",
             key="map_ancho_serv"
         )
     with cm3:
         capa_operativa = st.selectbox(
             "🎨 Capa Operativa sobre Piquetes:",
-            options=["Color Distintivo por Línea", "Avance Desmonte (%)", "Perfilado Real (Campo)", "PAT Medida Real (Campo)"],
+            options=[
+                "Estado Vegetación Vigente (Ciclo Real)",
+                "Color Distintivo por Línea",
+                "Perfilado Real (Campo)",
+                "PAT Medida Real (Campo)"
+            ],
             key="map_capa_op"
         )
     with cm4:
+        proyeccion_meses = st.select_slider(
+            "⏳ Simulación Rebrote:",
+            options=[0, 3, 6, 9, 12],
+            value=0,
+            format_func=lambda m: "Hoy (Tiempo Real)" if m == 0 else f"+{m} meses",
+            key="map_proyeccion_meses"
+        )
+    with cm5:
         estilo_mapa = st.selectbox(
-            "🌍 Fondo Cartográfico:",
+            "🌍 Fondo Mapa:",
             options=["open-street-map", "carto-darkmatter", "carto-positron"],
-            format_func=lambda s: {"open-street-map": "Rutas y Localidades (OSM)", "carto-darkmatter": "Oscuro Técnico", "carto-positron": "Claro Catastral"}[s],
+            format_func=lambda s: {"open-street-map": "Rutas (OSM)", "carto-darkmatter": "Oscuro", "carto-positron": "Claro"}[s],
             key="map_estilo_fondo"
         )
 
+    fecha_evaluacion = date.today() + timedelta(days=int(proyeccion_meses) * 30)
+
     if df_gps_all.empty:
-        st.warning("⚠️ Aún no hay coordenadas GPS cargadas en la base de datos. Subí tu archivo **`Base de datos piquetes.xlsm`** (o `piquetes_region_centro_gps.csv`) en el importador de abajo para cargar los 1.830 piquetes de la Región Centro.")
+        st.warning("⚠️ Aún no hay coordenadas GPS cargadas. Subí tu archivo **`Base de datos piquetes.xlsm`** en la pestaña de importación de abajo para cargar los 1.830 piquetes.")
     else:
         df_map = df_gps_all.copy() if mapa_linea_sel.startswith("TODAS") else df_gps_all[df_gps_all["linea"] == mapa_linea_sel].copy()
         df_map["_nat"] = df_map["piquete"].apply(natural_piq_key)
@@ -1093,7 +1176,13 @@ with tab_mapa:
         df_map["dist_m"] = dist_m_list
         df_map["area_m2"] = df_map["dist_m"] * ancho_serv_sel
         df_map["hectareas"] = df_map["area_m2"] / 10000.0
-        df_map["ha_limpias"] = df_map["hectareas"] * (df_map["pct_desmonte"].fillna(0.0) / 100.0)
+
+        # Aplicar motor de rebrote cíclico desde la fecha satelital o de limpieza hasta fecha_evaluacion
+        df_map["pct_vigente"] = [
+            calcular_limpieza_vigente(r.pct_desmonte, r.fecha_limpieza, r.tipo_vegetacion, fecha_evaluacion)
+            for r in df_map.itertuples()
+        ]
+        df_map["ha_limpias_vig"] = df_map["hectareas"] * (df_map["pct_vigente"] / 100.0)
 
         set_perf = set(zip(perf_ventana["sigla"], perf_ventana["piq_id"])) if not perf_ventana.empty else set()
         set_pat = set(zip(pat_ventana["sigla"], pat_ventana["piq_id"])) if not pat_ventana.empty else set()
@@ -1104,17 +1193,19 @@ with tab_mapa:
         km_vista = df_map["dist_m"].sum() / 1000.0
         m2_vista = df_map["area_m2"].sum()
         ha_vista = df_map["hectareas"].sum()
-        ha_limpias_vista = df_map["ha_limpias"].sum()
+        ha_limpias_vista = df_map["ha_limpias_vig"].sum()
         pct_limpio_vista = (ha_limpias_vista / ha_vista * 100) if ha_vista > 0 else 0.0
 
         mk1, mk2, mk3, mk4, mk5 = st.columns(5)
         mk1.metric("Piquetes Georreferenciados", f"{len(df_map):,}")
         mk2.metric("Longitud GPS Calculada", f"{km_vista:.2f} km")
         mk3.metric(f"Superficie Electroducto ({ancho_serv_sel:.0f}m)", f"{m2_vista:,.0f} m²", f"{ha_vista:.2f} ha totales")
-        mk4.metric("Superficie Limpia (Desmonte)", f"{ha_limpias_vista:.2f} ha", f"{pct_limpio_vista:.1f}% limpio")
+        mk4.metric(f"Superficie Limpia ({fecha_evaluacion.strftime('%d/%m/%Y')})", f"{ha_limpias_vista:.2f} ha", f"{pct_limpio_vista:.1f}% vigente")
         mk5.metric("Piquetes Campo (Perf / PAT)", f"{int(df_map['tiene_perf'].sum())} / {int(df_map['tiene_pat'].sum())}")
 
-        # Construcción del Mapa Interactivo con colores únicos por línea
+        if capa_operativa == "Estado Vegetación Vigente (Ciclo Real)":
+            st.caption("🟢 **Óptimo (≥ 70% limpio)** | 🟡 **Preventivo / Rebrote (30% a 69%)** | 🔴 **Crítico / Intervenir (< 30% limpio)**")
+
         fig_map = go.Figure()
 
         for sig, grp in df_map.groupby("linea", sort=False):
@@ -1123,9 +1214,10 @@ with tab_mapa:
             hover_txts = [
                 f"<b>LAT {r.linea} — Piquete {r.piquete}</b><br>"
                 f"Tipo: {r.tipo} | Estructura: {r.estructura}<br>"
-                f"GPS: {r.latitud:.6f}, {r.longitud:.6f}<br>"
-                f"Vano siguiente: {r.dist_m:.1f} m ({r.hectareas:.3f} ha)<br>"
-                f"Desmonte vano: {r.pct_desmonte:.0f}% ({r.ha_limpias:.3f} ha limpias)<br>"
+                f"Vegetación: {r.tipo_vegetacion}<br>"
+                f"Última Toma / Limpieza: {r.fecha_limpieza} (Base: {r.pct_desmonte:.0f}%)<br>"
+                f"<b>Estado Vigente ({fecha_evaluacion.strftime('%d/%m/%Y')}): {r.pct_vigente:.1f}% limpio</b><br>"
+                f"Vano siguiente: {r.dist_m:.1f} m ({r.ha_limpias_vig:.3f} / {r.hectareas:.3f} ha)<br>"
                 f"Perfilado: {'✅ Sí' if r.tiene_perf else '⏳ Pendiente'} | PAT: {'✅ Sí' if r.tiene_pat else '⏳ Pendiente'}"
                 for r in grp.itertuples()
             ]
@@ -1139,8 +1231,11 @@ with tab_mapa:
                 hoverinfo="skip"
             ))
 
-            if capa_operativa == "Avance Desmonte (%)":
-                colores_pts = ["#10B981" if p >= 80 else ("#F59E0B" if p > 0 else color_linea) for p in grp["pct_desmonte"]]
+            if capa_operativa == "Estado Vegetación Vigente (Ciclo Real)":
+                colores_pts = [
+                    "#10B981" if p >= 70.0 else ("#F59E0B" if p >= 30.0 else "#EF4444")
+                    for p in grp["pct_vigente"]
+                ]
             elif capa_operativa == "Perfilado Real (Campo)":
                 colores_pts = ["#3B82F6" if ok else color_linea for ok in grp["tiene_perf"]]
             elif capa_operativa == "PAT Medida Real (Campo)":
@@ -1181,14 +1276,53 @@ with tab_mapa:
     st.divider()
 
     # =========================================================================
-    # SECCIÓN DE GESTIÓN GPS: 1) DECLARAR PIQUETE | 2) IMPORTAR EXCEL | 3) CALCULAR TRAMO
+    # SECCIÓN OPERATIVA GPS Y REBROTE EN TIEMPO REAL
     # =========================================================================
-    subtab_decl, subtab_imp, subtab_calc = st.tabs([
-        "📍 Declarar / Editar Coordenadas GPS",
-        "📥 Importar Base Piquetes / Planilla Desmonte (.xlsm / .xlsx)",
-        "📐 Calculadora de Desmonte por Tramo (m² y Hectáreas)"
+    subtab_campo, subtab_decl, subtab_imp, subtab_calc = st.tabs([
+        "🚁 Actualización en Vivo (Cuadrilla 1 / Recorrido Dron)",
+        "📍 Declarar / Editar Piquete GPS",
+        "📥 Importar Excel Piquetes / Desmonte",
+        "📐 Calculadora por Tramo (m² y ha)"
     ])
 
+    # 1. ACTUALIZACIÓN RÁPIDA EN TIEMPO REAL POR RANGO DE PIQUETES
+    with subtab_campo:
+        st.markdown("##### 🚁 Calibración en Vivo de Vegetación por Tramo (Recorrido Dron / Visual / Desmonte)")
+        st.caption("Usá este panel cuando la Cuadrilla 1 termina un tramo o cuando la Cuadrilla 4 (Recorrido Lento / Rápido / Dron) releva el estado real de rebrote.")
+        if df_gps_all.empty:
+            st.info("Cargá primero las coordenadas GPS para habilitar la actualización por tramo.")
+        else:
+            with st.container(border=True):
+                rc1, rc2, rc3 = st.columns([2, 1.3, 1.3])
+                with rc1:
+                    rt_linea = st.selectbox("⚡ Línea LAT:", LINEAS_SIGLAS, key="rt_linea_sel")
+                sub_rt = df_gps_all[df_gps_all["linea"] == rt_linea].reset_index(drop=True)
+                piqs_rt = sub_rt["piquete"].tolist()
+
+                with rc2:
+                    rt_piq_ini = st.selectbox("Piquete Inicio:", piqs_rt, index=0, key="rt_piq_ini")
+                with rc3:
+                    rt_piq_fin = st.selectbox("Piquete Fin:", piqs_rt, index=min(10, len(piqs_rt)-1), key="rt_piq_fin")
+
+                rc4, rc5, rc6 = st.columns([1.5, 2, 1.5])
+                with rc4:
+                    rt_fecha = st.date_input("📅 Fecha Relevamiento / Limpieza:", value=date.today(), format="DD/MM/YYYY", key="rt_fecha")
+                with rc5:
+                    rt_veg = st.selectbox("🌿 Tipo de Vegetación Predominante:", list(CICLOS_VEGETACION_DIAS.keys()), key="rt_veg")
+                with rc6:
+                    rt_pct = st.number_input("✅ % Limpio Real Observado:", min_value=0.0, max_value=100.0, value=100.0, step=5.0, key="rt_pct")
+
+                if st.button("🔄 Actualizar Estado en Tiempo Real en el Mapa", type="primary", use_container_width=True, key="btn_rt_update"):
+                    i1 = piqs_rt.index(rt_piq_ini)
+                    i2 = piqs_rt.index(rt_piq_fin)
+                    if i1 > i2:
+                        i1, i2 = i2, i1
+                    piqs_afectados = {str(piqs_rt[k]).strip(): float(rt_pct) for k in range(i1, i2 + 1)}
+                    cant_upd = db_update_pct_desmonte_linea(rt_linea, piqs_afectados, fecha_relev=rt_fecha, tipo_veg=rt_veg)
+                    st.toast(f"¡{cant_upd} piquetes actualizados en {rt_linea} con fecha {rt_fecha.strftime('%d/%m/%Y')}!", icon="🛰️")
+                    st.rerun()
+
+    # 2. DECLARAR O EDITAR COORDENADAS MANUALMENTE
     with subtab_decl:
         st.markdown("##### 📍 Declarar Coordenadas GPS de Piquete (Latitud y Longitud)")
         with st.container(border=True):
@@ -1211,6 +1345,12 @@ with tab_mapa:
                 d_est = st.selectbox("Material Poste", ["Hormigón", "Metálica", "Madera"], key="decl_est")
             with dc8:
                 d_pct = st.number_input("% Desmonte Vano", min_value=0.0, max_value=100.0, value=0.0, step=5.0, key="decl_pct")
+
+            dc9, dc10 = st.columns(2)
+            with dc9:
+                d_fec_limp = st.date_input("Fecha Última Limpieza", value=date.today(), format="DD/MM/YYYY", key="decl_fec_limp")
+            with dc10:
+                d_veg = st.selectbox("Vegetación del Entorno", list(CICLOS_VEGETACION_DIAS.keys()), key="decl_veg")
 
             dist_calc_km = 0.0
             if not df_gps_all.empty:
@@ -1237,17 +1377,20 @@ with tab_mapa:
                         "dist_km": round(dist_calc_km, 5),
                         "tipo": d_tipo,
                         "estructura": d_est,
-                        "pct_desmonte": float(d_pct)
+                        "pct_desmonte": float(d_pct),
+                        "fecha_limpieza": str(d_fec_limp),
+                        "tipo_vegetacion": d_veg
                     }])
                     st.success(f"✅ Coordenada del Piquete {d_piq} ({d_linea}) guardada correctamente.")
                     st.rerun()
 
+    # 3. IMPORTADOR MASIVO DE EXCEL
     with subtab_imp:
         col_i1, col_i2 = st.columns(2)
 
         with col_i1:
             st.markdown("##### 📂 1. Importar Coordenadas (`Base de datos piquetes.xlsm` o `.csv`)")
-            st.caption("Importa automáticamente los 1.830 piquetes de las 9 líneas de la Región Centro con sus coordenadas GPS y ordenamiento natural.")
+            st.caption("Importa automáticamente los 1.830 piquetes de las 9 líneas de la Región Centro con sus coordenadas GPS.")
             file_bd_gps = st.file_uploader("Subir Base de datos piquetes (.xlsm / .xlsx / .csv)", type=["xlsm", "xlsx", "csv"], key="upl_bd_piquetes")
 
             if file_bd_gps is not None:
@@ -1286,7 +1429,9 @@ with tab_mapa:
                                 "dist_km": round(float(r.dist_km), 5),
                                 "tipo": str(r.tipo),
                                 "estructura": str(r.estructura),
-                                "pct_desmonte": 0.0
+                                "pct_desmonte": 0.0,
+                                "fecha_limpieza": str(date.today()),
+                                "tipo_vegetacion": "Monte Nativo / Chilcal"
                             })
                         with st.spinner("Guardando 1.830 coordenadas GPS..."):
                             db_upsert_gps_batch(recs_imp)
@@ -1297,8 +1442,14 @@ with tab_mapa:
 
         with col_i2:
             st.markdown("##### 🌲 2. Importar Planilla de Desmonte (`DESMONTE LAT *.xlsx`)")
-            st.caption("Lee los porcentajes por piquete de 'Porcentaje Piquetes', calcula distancias desde GPS, superficie en m² y hectáreas limpias.")
+            st.caption("Lee los porcentajes por piquete de 'Porcentaje Piquetes', registra la fecha de relevamiento y actualiza el ciclo vegetal.")
             linea_desm_xl = st.selectbox("Línea LAT correspondiente a la planilla:", LINEAS_SIGLAS, key="imp_desm_linea")
+            col_dx1, col_dx2 = st.columns(2)
+            with col_dx1:
+                fecha_desm_xl = st.date_input("Fecha del Relevamiento:", value=date.today(), format="DD/MM/YYYY", key="imp_desm_fecha")
+            with col_dx2:
+                veg_desm_xl = st.selectbox("Vegetación Dominante:", list(CICLOS_VEGETACION_DIAS.keys()), key="imp_desm_veg")
+
             file_desm_xl = st.file_uploader("Subir Excel de Desmonte (.xlsx)", type=["xlsx", "xlsm"], key="upl_desmonte_xl")
 
             if file_desm_xl is not None:
@@ -1343,7 +1494,7 @@ with tab_mapa:
                         )
 
                         if st.button("💾 Aplicar Avance al Mapa y Actualizar Plan ENRE", type="primary", use_container_width=True, key="btn_apply_desm_xl"):
-                            db_update_pct_desmonte_linea(linea_desm_xl, mapa_pct)
+                            db_update_pct_desmonte_linea(linea_desm_xl, mapa_pct, fecha_relev=fecha_desm_xl, tipo_veg=veg_desm_xl)
                             db_insert_registro({
                                 "anio": int(anio_sel),
                                 "linea": linea_desm_xl,
@@ -1358,13 +1509,14 @@ with tab_mapa:
                                 "ejec_piq": sum(1 for v in mapa_pct.values() if v > 0),
                                 "ot": "GPS-DESM",
                                 "estado": "En Ejecución" if pct_avance_tot < 99.9 else "Ejecutado",
-                                "observaciones": f"Calculado por GPS ({ancho_serv_sel:.0f}m): {ha_limpia:.2f} ha limpias."
+                                "observaciones": f"Calculado por GPS ({ancho_serv_sel:.0f}m): {ha_limpia:.2f} ha limpias ({fecha_desm_xl.strftime('%d/%m/%Y')})."
                             })
                             st.toast(f"¡Desmonte de {linea_desm_xl} actualizado en Mapa e Indicadores!", icon="🌲")
                             st.rerun()
                 except Exception as e:
                     st.error(f"Error procesando planilla de desmonte: {e}")
 
+    # 4. CALCULADORA GEOMÉTRICA POR TRAMO DE PIQUETES
     with subtab_calc:
         st.markdown("##### 📐 Calculadora de Distancia, Superficie (m²) y Hectáreas entre Piquetes")
         if df_gps_all.empty:
