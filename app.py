@@ -174,6 +174,36 @@ def generar_mapa_semanas(anio):
         })
     return pd.DataFrame(semanas)
 
+def crear_grafico_torta(titulo, ejecutado, total, unidad, color_ejec):
+    pendiente = max(0.0, round(float(total) - float(ejecutado), 2))
+    ejec_val = round(float(ejecutado), 2)
+    pct = (ejec_val / total * 100) if total > 0 else 0.0
+
+    fig = go.Figure(data=[go.Pie(
+        labels=["Ejecutado", "Pendiente"],
+        values=[ejec_val, pendiente],
+        hole=0.58,
+        marker=dict(colors=[color_ejec, "#1E293B"], line=dict(color="#0F172A", width=2)),
+        textinfo="percent",
+        textfont=dict(size=12, color="#FFFFFF"),
+        hovertemplate=f"<b>%{{label}}</b><br>%{{value:.1f}} {unidad} (%{{percent}})<extra></extra>"
+    )])
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=f"<b>{titulo}</b>", font=dict(size=13, color="#E2E8F0"), x=0.5, xanchor="center"),
+        annotations=[dict(
+            text=f"<b>{pct:.1f}%</b><br><span style='font-size:10px;color:#94A3B8'>{ejec_val:g}/{total:g} {unidad}</span>",
+            x=0.5, y=0.5, font_size=15, showarrow=False, font=dict(color="#FFFFFF")
+        )],
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5, font=dict(size=11)),
+        height=275,
+        margin=dict(l=10, r=10, t=42, b=30),
+        plot_bgcolor="#0F172A",
+        paper_bgcolor="#0F172A"
+    )
+    return fig
+
 # =============================================================================
 # 3. PERSISTENCIA DE DATOS E INTEGRACIÓN CON TABLAS REALES DE SUPABASE
 # =============================================================================
@@ -264,6 +294,7 @@ def fetch_datos_reales_supabase():
         if rows_perf:
             df_perf = pd.DataFrame(rows_perf).drop_duplicates(subset=["linea", "piquete", "fecha"])
             df_perf["sigla"] = df_perf["linea"].apply(normalizar_sigla_lat)
+            df_perf["piq_id"] = df_perf["piquete"].astype(str).str.strip()
             parsed = df_perf["fecha"].apply(parsear_fecha_semana)
             df_perf["anio"] = [p[0] for p in parsed]
             df_perf["semana"] = [p[1] for p in parsed]
@@ -362,7 +393,6 @@ def db_delete_registro(reg_id):
     conn.close()
 
 def db_vaciar_plan_completo():
-    """Borra todos los registros de la tabla plan_mantenimiento_enre (elimina los datos ficticios)."""
     if MODO_NUBE:
         try:
             sb_client.table("plan_mantenimiento_enre").delete().gte("id", 0).execute()
@@ -410,7 +440,7 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
     t1_data = [[
         "Línea", "Tramo Geográfico", "Long.\n(km)", "Franja\n(ha 22m)",
         "Desm. Prog\n(km)", "Desm. Ejec\n(km)", "Limpio\n(ha)",
-        "% Cumpl.\ns/ Prog.", "% s/\nLínea", "Perf. Real\n(piq)", "PAT Real\n(piq)"
+        "% Desm.\nLínea", "Perf. Real\n(piq / %)", "PAT Real\n(piq / %)"
     ]]
 
     for r in df_resumen_lineas.itertuples():
@@ -422,13 +452,12 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
             f"{r.Desm_Prog_Km:.2f}",
             f"{r.Desm_Ejec_Km:.2f}",
             f"{r.Desm_Ejec_Ha:.1f}",
-            f"{r.Pct_Cumpl_Prog:.1f}%",
             f"{r.Pct_Linea_Limpia:.1f}%",
-            f"{r.Perf_Real_Piq}/{r.Piquetes}",
-            f"{r.PAT_Real_Piq}/{r.Piquetes}"
+            f"{r.Perf_Real_Piq}/{r.Piquetes} ({r.Pct_Perf_Real:.0f}%)",
+            f"{r.PAT_Real_Piq}/{r.Piquetes} ({r.Pct_PAT_Real:.0f}%)"
         ])
 
-    t1 = Table(t1_data, colWidths=[52, 165, 48, 52, 56, 56, 50, 54, 52, 62, 62])
+    t1 = Table(t1_data, colWidths=[52, 165, 46, 50, 54, 54, 48, 52, 82, 82])
     t1.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0E5E35")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -494,7 +523,7 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
         top=Side(style="thin", color="CBD5E1"), bottom=Side(style="thin", color="CBD5E1")
     )
 
-    ws1.merge_cells("A1:L1")
+    ws1.merge_cells("A1:N1")
     ws1["A1"] = f"TRANSNEA S.A. - INDICADORES DE MANTENIMIENTO Y DESMONTE (AEA 95301 - FRANJA 22M) - AÑO {anio}"
     ws1["A1"].font = font_title
     ws1["A1"].fill = fill_green
@@ -504,8 +533,9 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
     headers_h1 = [
         "Sigla LAT", "Tramo", "Longitud (km)", "Piquetes Totales", "Franja Total (ha)",
         "Desmonte Prog (km)", "Desmonte Ejec (km)", "Superficie Limpia (ha)",
-        "% Cumpl. s/ Programado", "% Limpio s/ Total Línea",
-        "Perfilado Real Campo (piq)", "PAT Medida Real Campo (piq)"
+        "% Cumpl. Desm s/ Prog", "% Desmonte s/ Línea",
+        "Perfilado Real (piq)", "% Perfilado Línea",
+        "PAT Real (piq)", "% PAT Línea"
     ]
     for c_i, h_txt in enumerate(headers_h1, start=1):
         cell = ws1.cell(row=3, column=c_i, value=h_txt)
@@ -519,7 +549,8 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
             r.Sigla, r.Tramo, r.Km_Total, r.Piquetes, r.Ha_Total,
             r.Desm_Prog_Km, r.Desm_Ejec_Km, r.Desm_Ejec_Ha,
             round(r.Pct_Cumpl_Prog, 2), round(r.Pct_Linea_Limpia, 2),
-            r.Perf_Real_Piq, r.PAT_Real_Piq
+            r.Perf_Real_Piq, round(r.Pct_Perf_Real, 2),
+            r.PAT_Real_Piq, round(r.Pct_PAT_Real, 2)
         ]
         for c_i, v in enumerate(vals, start=1):
             c = ws1.cell(row=r_i, column=c_i, value=v)
@@ -654,7 +685,7 @@ tab_indicadores, tab_cronograma, tab_cargar, tab_gestion = st.tabs([
 ])
 
 # =============================================================================
-# PESTAÑA 1: INDICADORES DE DESMONTE (AEA 95301) + DATOS REALES PERFILADO/PAT
+# PESTAÑA 1: INDICADORES, DIAGRAMAS DE TORTA Y BARRAS INTEGRANDO DATOS REALES
 # =============================================================================
 with tab_indicadores:
     df_anio = df_raw[df_raw["anio"] == anio_sel].copy() if not df_raw.empty else pd.DataFrame(columns=df_raw.columns)
@@ -667,7 +698,7 @@ with tab_indicadores:
             (df_perf_real["anio"] == anio_sel) &
             (df_perf_real["semana"] >= s_desde) &
             (df_perf_real["semana"] <= s_hasta)
-        ]
+        ].drop_duplicates(subset=["sigla", "piq_id"])
 
     pat_ventana = pd.DataFrame()
     if not df_pat_real.empty:
@@ -675,7 +706,7 @@ with tab_indicadores:
             (df_pat_real["anio"] == anio_sel) &
             (df_pat_real["semana"] >= s_desde) &
             (df_pat_real["semana"] <= s_hasta)
-        ]
+        ].drop_duplicates(subset=["sigla", "piq_id"])
 
     # Cálculos Cuadrilla 1 (Desmonte)
     df_desm = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 1 - Desmonte y Limpieza"] if not df_horizonte.empty else pd.DataFrame()
@@ -686,12 +717,12 @@ with tab_indicadores:
     pct_red_limpia = (km_desm_ejec / TOTAL_KM_RED * 100) if TOTAL_KM_RED > 0 else 0.0
 
     # Cálculos Cuadrilla 2 (Datos reales de Supabase 'relevamientos' + cambios aisladores del plan)
-    piq_perf_real_total = perf_ventana["piquete"].nunique() if not perf_ventana.empty else 0
+    piq_perf_real_total = len(perf_ventana)
     df_c2 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 2 - Alturas y TCT"] if not df_horizonte.empty else pd.DataFrame()
     piq_aisl_camb = df_c2[df_c2["tarea"] == "Cambio de Aisladores (Correctivo)"]["ejec_piq"].sum() if not df_c2.empty else 0
 
     # Cálculos Cuadrilla 3 (Datos reales de Supabase 'mediciones_pat' + reparaciones del plan)
-    piq_pat_real_total = pat_ventana["piq_id"].nunique() if not pat_ventana.empty else 0
+    piq_pat_real_total = len(pat_ventana)
     df_c3 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 3 - Puesta a Tierra (PAT)"] if not df_horizonte.empty else pd.DataFrame()
     piq_pat_rep = df_c3[df_c3["tarea"] == "Reparación de PAT"]["ejec_piq"].sum() if not df_c3.empty else 0
 
@@ -717,6 +748,29 @@ with tab_indicadores:
 
     st.divider()
 
+    # -------------------------------------------------------------------------
+    # SECCIÓN DE DIAGRAMAS DE TORTA (COBERTURA GLOBAL REGIÓN CENTRO)
+    # -------------------------------------------------------------------------
+    st.markdown("#### 🍩 Distribución Porcentual Global — Región Centro")
+    col_t1, col_t2, col_t3 = st.columns(3)
+    with col_t1:
+        st.plotly_chart(
+            crear_grafico_torta("🌲 Desmonte Electroducto (22m)", km_desm_ejec, TOTAL_KM_RED, "km", "#10B981"),
+            use_container_width=True
+        )
+    with col_t2:
+        st.plotly_chart(
+            crear_grafico_torta("⚡ Perfilado Aisladores (Campo)", piq_perf_real_total, TOTAL_PIQ_RED, "piq", "#3B82F6"),
+            use_container_width=True
+        )
+    with col_t3:
+        st.plotly_chart(
+            crear_grafico_torta("🔌 Medición PAT (Campo)", piq_pat_real_total, TOTAL_PIQ_RED, "piq", "#F59E0B"),
+            use_container_width=True
+        )
+
+    st.divider()
+
     # Tabla consolidada por Línea LAT cruzando Planificación + Datos Reales
     filas_lineas = []
     for sigla, info in CATALOGO_LAT.items():
@@ -732,8 +786,11 @@ with tab_indicadores:
         pct_prog = (d_ejec / d_prog * 100) if d_prog > 0 else 0.0
         pct_linea = (d_ejec / km_tot * 100) if km_tot > 0 else 0.0
 
-        perf_l_real = int(perf_ventana[perf_ventana["sigla"] == sigla]["piquete"].nunique()) if not perf_ventana.empty else 0
+        perf_l_real = int(perf_ventana[perf_ventana["sigla"] == sigla]["piq_id"].nunique()) if not perf_ventana.empty else 0
         pat_l_real = int(pat_ventana[pat_ventana["sigla"] == sigla]["piq_id"].nunique()) if not pat_ventana.empty else 0
+
+        pct_perf_l = (perf_l_real / piq_tot * 100) if piq_tot > 0 else 0.0
+        pct_pat_l = (pat_l_real / piq_tot * 100) if piq_tot > 0 else 0.0
 
         filas_lineas.append({
             "Sigla": sigla,
@@ -747,48 +804,74 @@ with tab_indicadores:
             "Pct_Cumpl_Prog": pct_prog,
             "Pct_Linea_Limpia": pct_linea,
             "Perf_Real_Piq": perf_l_real,
-            "PAT_Real_Piq": pat_l_real
+            "Pct_Perf_Real": pct_perf_l,
+            "PAT_Real_Piq": pat_l_real,
+            "Pct_PAT_Real": pct_pat_l
         })
 
     df_resumen_lineas = pd.DataFrame(filas_lineas)
 
-    col_g1, col_g2 = st.columns([1.05, 0.95])
+    col_g1, col_g2 = st.columns([1.15, 0.85])
     with col_g1:
-        st.markdown("##### 📊 Avance de Limpieza de Electroducto por Línea (% Traza Total)")
+        st.markdown("##### 📊 Avance Comparativo por Línea (% Desmonte vs. Perfilado Real vs. PAT Real)")
         fig_bar = go.Figure()
+
         fig_bar.add_trace(go.Bar(
             y=df_resumen_lineas["Sigla"],
             x=df_resumen_lineas["Pct_Linea_Limpia"],
+            name="🌲 Desmonte (22m)",
             orientation="h",
-            text=[f" <b>{r.Pct_Linea_Limpia:.1f}%</b> ({r.Desm_Ejec_Km:.1f} / {r.Km_Total:.1f} km)" for r in df_resumen_lineas.itertuples()],
+            text=[f"{v:.1f}%" if v > 0 else "" for v in df_resumen_lineas["Pct_Linea_Limpia"]],
             textposition="outside",
-            cliponaxis=False,
-            marker=dict(color="#10B981", line=dict(color="#FFFFFF", width=1)),
+            marker=dict(color="#10B981")
         ))
+
+        fig_bar.add_trace(go.Bar(
+            y=df_resumen_lineas["Sigla"],
+            x=df_resumen_lineas["Pct_Perf_Real"],
+            name="⚡ Perfilado Real",
+            orientation="h",
+            text=[f"{v:.1f}%" if v > 0 else "" for v in df_resumen_lineas["Pct_Perf_Real"]],
+            textposition="outside",
+            marker=dict(color="#3B82F6")
+        ))
+
+        fig_bar.add_trace(go.Bar(
+            y=df_resumen_lineas["Sigla"],
+            x=df_resumen_lineas["Pct_PAT_Real"],
+            name="🔌 PAT Real",
+            orientation="h",
+            text=[f"{v:.1f}%" if v > 0 else "" for v in df_resumen_lineas["Pct_PAT_Real"]],
+            textposition="outside",
+            marker=dict(color="#F59E0B")
+        ))
+
         fig_bar.update_layout(
             template="plotly_dark",
+            barmode="group",
             plot_bgcolor="#0F172A", paper_bgcolor="#0F172A",
-            xaxis=dict(range=[0, 128], title="% de Línea Limpia (Ancho 22m)", gridcolor="#334155"),
+            xaxis=dict(range=[0, 118], title="% de Avance sobre Total de Línea", gridcolor="#334155"),
             yaxis=dict(autorange="reversed", gridcolor="#334155"),
-            height=380, margin=dict(l=20, r=40, t=20, b=20)
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=450, margin=dict(l=20, r=35, t=35, b=20)
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
     with col_g2:
         st.markdown("##### 📋 Tabla Consolidada por Línea (Plan + Campo Real)")
         df_show_l = df_resumen_lineas[[
-            "Sigla", "Km_Total", "Desm_Prog_Km", "Desm_Ejec_Km", "Pct_Linea_Limpia", "Perf_Real_Piq", "PAT_Real_Piq"
+            "Sigla", "Km_Total", "Desm_Ejec_Km", "Pct_Linea_Limpia", "Perf_Real_Piq", "Pct_Perf_Real", "PAT_Real_Piq", "Pct_PAT_Real"
         ]].rename(columns={
-            "Sigla": "Línea", "Km_Total": "km Tot", "Desm_Prog_Km": "Desm Prog",
-            "Desm_Ejec_Km": "Desm Ejec", "Pct_Linea_Limpia": "% Limpio",
-            "Perf_Real_Piq": "Perf. Real", "PAT_Real_Piq": "PAT Real"
+            "Sigla": "Línea", "Km_Total": "km Tot", "Desm_Ejec_Km": "Desm km",
+            "Pct_Linea_Limpia": "% Desm", "Perf_Real_Piq": "Perf Piq",
+            "Pct_Perf_Real": "% Perf", "PAT_Real_Piq": "PAT Piq", "Pct_PAT_Real": "% PAT"
         })
         st.dataframe(
             df_show_l.style.format({
-                "km Tot": "{:.2f}", "Desm Prog": "{:.2f}", "Desm Ejec": "{:.2f}",
-                "% Limpio": "{:.1f}%", "Perf. Real": "{:,}", "PAT Real": "{:,}"
+                "km Tot": "{:.1f}", "Desm km": "{:.1f}", "% Desm": "{:.1f}%",
+                "Perf Piq": "{:,}", "% Perf": "{:.1f}%", "PAT Piq": "{:,}", "% PAT": "{:.1f}%"
             }),
-            use_container_width=True, hide_index=True, height=380
+            use_container_width=True, hide_index=True, height=450
         )
 
     st.divider()
@@ -821,64 +904,109 @@ with tab_indicadores:
             st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
 
 # =============================================================================
-# PESTAÑA 2: CRONOGRAMA SEMANAL (12, 6, 4, 3 Y 1 MES)
+# PESTAÑA 2: CRONOGRAMA SEMANAL (PLANIFICADO + EJECUCIÓN REAL DE CAMPO)
 # =============================================================================
 with tab_cronograma:
-    if df_raw.empty:
-        st.info("No hay actividades programadas en el cronograma. Podés cargarlas en la pestaña '➕ Programar Actividad'.")
-    else:
+    incluir_reales_gantt = st.checkbox("🔗 Mostrar también ejecución real registrada en Perfilado y PAT en el cronograma", value=True)
+
+    filas_gantt = []
+
+    # 1. Actividades cargadas en plan_mantenimiento_enre
+    if not df_raw.empty:
         df_crono = df_raw[(df_raw["anio"] == anio_sel) & (df_raw["semana_fin"] >= s_desde) & (df_raw["semana_inicio"] <= s_hasta)].copy()
         if filtro_cuadrilla != "TODAS LAS CUADRILLAS":
             df_crono = df_crono[df_crono["cuadrilla"] == filtro_cuadrilla]
 
-        if df_crono.empty:
-            st.info(f"No hay actividades programadas entre S{s_desde:02d} y S{s_hasta:02d} para este filtro.")
-        else:
-            st.markdown(f"#### 🗓️ Diagrama Gantt Semanal ({horizonte_sel.split('(')[0].strip()} • S{s_desde:02d} a S{s_hasta:02d})")
-            fig_gantt = go.Figure()
+        for r in df_crono.itertuples():
+            c_short = r.cuadrilla.split("-")[0].strip()
+            meta_txt = f"{r.ejec_km}/{r.prog_km} km" if r.prog_km > 0 else f"{r.ejec_piq}/{r.prog_piq} piq"
+            filas_gantt.append({
+                "linea": r.linea,
+                "label": f"<b>{r.linea}</b> | {c_short}: {r.tarea[:22]}",
+                "s_ini": int(r.semana_inicio),
+                "s_fin": int(r.semana_fin),
+                "estado": r.estado,
+                "texto_barra": f"S{r.semana_inicio:02d}-S{r.semana_fin:02d} ({meta_txt})"
+            })
 
-            meses_u = df_semanas_vista["mes_num"].unique()
-            for idx_m, m_num in enumerate(meses_u):
-                sems_m = df_semanas_vista[df_semanas_vista["mes_num"] == m_num]["semana"]
-                x0_m, x1_m = sems_m.min() - 0.5, sems_m.max() + 0.5
-                if idx_m % 2 == 0:
-                    fig_gantt.add_vrect(x0=x0_m, x1=x1_m, fillcolor="rgba(255, 255, 255, 0.04)", line_width=0)
-                fig_gantt.add_annotation(
-                    x=(x0_m + x1_m) / 2, y=1.06, yref="paper",
-                    text=f"<b>{MESES_ES[m_num].upper()}</b>", showarrow=False, font=dict(size=11, color="#34D399")
-                )
+    # 2. Avances reales de Perfilado y PAT desde Supabase
+    if incluir_reales_gantt:
+        if (filtro_cuadrilla in ["TODAS LAS CUADRILLAS", "Cuadrilla 2 - Alturas y TCT"]) and not perf_ventana.empty:
+            for sig, grp in perf_ventana.groupby("sigla"):
+                if sig in CATALOGO_LAT:
+                    s_min = int(grp["semana"].min())
+                    s_max = int(grp["semana"].max())
+                    cant_p = int(grp["piq_id"].nunique())
+                    filas_gantt.append({
+                        "linea": sig,
+                        "label": f"<b>{sig}</b> | [CAMPO] Perfilado Real",
+                        "s_ini": s_min,
+                        "s_fin": s_max,
+                        "estado": "Ejecutado",
+                        "texto_barra": f"S{s_min:02d}-S{s_max:02d} ({cant_p} piq. reales)"
+                    })
 
-            for r in df_crono.sort_values(by=["semana_inicio", "linea"], ascending=[False, True]).itertuples():
-                ini_c = max(r.semana_inicio, s_desde)
-                fin_c = min(r.semana_fin, s_hasta)
-                dur = (fin_c - ini_c) + 1
-                c_short = r.cuadrilla.split("-")[0].strip()
-                y_lbl = f"<b>{r.linea}</b> | {c_short}: {r.tarea[:22]}"
-                meta_txt = f"{r.ejec_km}/{r.prog_km} km" if r.prog_km > 0 else f"{r.ejec_piq}/{r.prog_piq} piq"
+        if (filtro_cuadrilla in ["TODAS LAS CUADRILLAS", "Cuadrilla 3 - Puesta a Tierra (PAT)"]) and not pat_ventana.empty:
+            for sig, grp in pat_ventana.groupby("sigla"):
+                if sig in CATALOGO_LAT:
+                    s_min = int(grp["semana"].min())
+                    s_max = int(grp["semana"].max())
+                    cant_p = int(grp["piq_id"].nunique())
+                    filas_gantt.append({
+                        "linea": sig,
+                        "label": f"<b>{sig}</b> | [CAMPO] Medición PAT Real",
+                        "s_ini": s_min,
+                        "s_fin": s_max,
+                        "estado": "Ejecutado",
+                        "texto_barra": f"S{s_min:02d}-S{s_max:02d} ({cant_p} piq. reales)"
+                    })
 
-                fig_gantt.add_trace(go.Bar(
-                    y=[y_lbl], x=[dur], base=[ini_c - 0.45], orientation="h",
-                    marker=dict(color=COLORES_ESTADO.get(r.estado, "#3B82F6"), line=dict(color="#FFFFFF", width=1)),
-                    text=f"S{r.semana_inicio:02d}-S{r.semana_fin:02d} ({meta_txt})",
-                    textposition="inside", insidetextanchor="middle",
-                    textfont=dict(color="#FFFFFF", size=10),
-                    showlegend=False
-                ))
+    if not filas_gantt:
+        st.info(f"No hay actividades programadas ni ejecuciones reales entre S{s_desde:02d} y S{s_hasta:02d} para este filtro.")
+    else:
+        df_gantt_all = pd.DataFrame(filas_gantt).sort_values(by=["s_ini", "linea"], ascending=[False, True])
+        st.markdown(f"#### 🗓️ Diagrama Gantt Semanal ({horizonte_sel.split('(')[0].strip()} • S{s_desde:02d} a S{s_hasta:02d})")
+        fig_gantt = go.Figure()
 
-            fig_gantt.update_layout(
-                template="plotly_dark", barmode="overlay",
-                plot_bgcolor="#0F172A", paper_bgcolor="#0F172A",
-                height=max(340, len(df_crono) * 42 + 100),
-                margin=dict(l=20, r=20, t=45, b=30),
-                xaxis=dict(
-                    range=[s_desde - 0.5, s_hasta + 0.5],
-                    tickvals=df_semanas_vista["semana"].tolist(),
-                    ticktext=df_semanas_vista["etiqueta"].tolist(),
-                    title="Semanas del Año", gridcolor="#334155"
-                ),
-                yaxis=dict(gridcolor="#334155")
+        meses_u = df_semanas_vista["mes_num"].unique()
+        for idx_m, m_num in enumerate(meses_u):
+            sems_m = df_semanas_vista[df_semanas_vista["mes_num"] == m_num]["semana"]
+            x0_m, x1_m = sems_m.min() - 0.5, sems_m.max() + 0.5
+            if idx_m % 2 == 0:
+                fig_gantt.add_vrect(x0=x0_m, x1=x1_m, fillcolor="rgba(255, 255, 255, 0.04)", line_width=0)
+            fig_gantt.add_annotation(
+                x=(x0_m + x1_m) / 2, y=1.06, yref="paper",
+                text=f"<b>{MESES_ES[m_num].upper()}</b>", showarrow=False, font=dict(size=11, color="#34D399")
             )
-            st.plotly_chart(fig_gantt, use_container_width=True)
+
+        for r in df_gantt_all.itertuples():
+            ini_c = max(r.s_ini, s_desde)
+            fin_c = min(r.s_fin, s_hasta)
+            dur = (fin_c - ini_c) + 1
+
+            fig_gantt.add_trace(go.Bar(
+                y=[r.label], x=[dur], base=[ini_c - 0.45], orientation="h",
+                marker=dict(color=COLORES_ESTADO.get(r.estado, "#3B82F6"), line=dict(color="#FFFFFF", width=1)),
+                text=r.texto_barra,
+                textposition="inside", insidetextanchor="middle",
+                textfont=dict(color="#FFFFFF", size=10),
+                showlegend=False
+            ))
+
+        fig_gantt.update_layout(
+            template="plotly_dark", barmode="overlay",
+            plot_bgcolor="#0F172A", paper_bgcolor="#0F172A",
+            height=max(340, len(df_gantt_all) * 42 + 100),
+            margin=dict(l=20, r=20, t=45, b=30),
+            xaxis=dict(
+                range=[s_desde - 0.5, s_hasta + 0.5],
+                tickvals=df_semanas_vista["semana"].tolist(),
+                ticktext=df_semanas_vista["etiqueta"].tolist(),
+                title="Semanas del Año", gridcolor="#334155"
+            ),
+            yaxis=dict(gridcolor="#334155")
+        )
+        st.plotly_chart(fig_gantt, use_container_width=True)
 
 # =============================================================================
 # PESTAÑA 3: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
