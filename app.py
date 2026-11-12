@@ -79,15 +79,15 @@ ANCHO_FRANJA_M = 22.0  # 11m izquierda + 11m derecha desde hilo de guardia (AEA 
 FACTOR_HA_POR_KM = ANCHO_FRANJA_M * 1000.0 / 10000.0  # 2.2 ha por cada km lineal
 
 CATALOGO_LAT = {
-    "ECO-SMA": {"tramo": "El Colorado (Formosa) / San Martín (Chaco)", "km": 30.47, "piquetes": 126},
-    "LLE-MAN": {"tramo": "Mansilla (Formosa) / La Leonesa (Chaco)", "km": 46.60, "piquetes": 162},
-    "RES-LLE": {"tramo": "Resistencia (Chaco) / La Leonesa (Chaco)", "km": 62.80, "piquetes": 223},
-    "RES-BAR1": {"tramo": "Resistencia (Chaco) / Barranqueras 1 (Chaco)", "km": 30.20, "piquetes": 149},
-    "RES-BAR2": {"tramo": "Resistencia (Chaco) / Barranqueras 2 (Chaco)", "km": 31.40, "piquetes": 154},
-    "RES-CCE": {"tramo": "Resistencia (Chaco) / Corrientes Centro (Corrientes)", "km": 34.20, "piquetes": 100},
-    "RES-SCA": {"tramo": "Resistencia (Chaco) / Santa Catalina (Corrientes)", "km": 42.00, "piquetes": 150},
-    "SCA-BVI": {"tramo": "Santa Catalina (Corrientes) / Bella Vista (Corrientes)", "km": 121.00, "piquetes": 463},
-    "BVI-GOY": {"tramo": "Bella Vista (Corrientes) / Goya (Corrientes)", "km": 77.70, "piquetes": 303},
+    "ECO-SMA": {"tramo": "El Colorado (Formosa) / San Martín (Chaco)", "km": 30.47, "piquetes": 126, "color": "#E11D48"},
+    "LLE-MAN": {"tramo": "Mansilla (Formosa) / La Leonesa (Chaco)", "km": 46.60, "piquetes": 162, "color": "#F97316"},
+    "RES-LLE": {"tramo": "Resistencia (Chaco) / La Leonesa (Chaco)", "km": 62.80, "piquetes": 223, "color": "#EAB308"},
+    "RES-BAR1": {"tramo": "Resistencia (Chaco) / Barranqueras 1 (Chaco)", "km": 30.20, "piquetes": 149, "color": "#10B981"},
+    "RES-BAR2": {"tramo": "Resistencia (Chaco) / Barranqueras 2 (Chaco)", "km": 31.40, "piquetes": 154, "color": "#06B6D4"},
+    "RES-CCE": {"tramo": "Resistencia (Chaco) / Corrientes Centro (Corrientes)", "km": 34.20, "piquetes": 100, "color": "#3B82F6"},
+    "RES-SCA": {"tramo": "Resistencia (Chaco) / Santa Catalina (Corrientes)", "km": 42.00, "piquetes": 150, "color": "#8B5CF6"},
+    "SCA-BVI": {"tramo": "Santa Catalina (Corrientes) / Bella Vista (Corrientes)", "km": 121.00, "piquetes": 463, "color": "#D946EF"},
+    "BVI-GOY": {"tramo": "Bella Vista (Corrientes) / Goya (Corrientes)", "km": 77.70, "piquetes": 303, "color": "#EC4899"},
 }
 
 LINEAS_SIGLAS = list(CATALOGO_LAT.keys())
@@ -1023,17 +1023,17 @@ with tab_indicadores:
             st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
 
 # =============================================================================
-# PESTAÑA 2: MAPA DE RED (REGIÓN OPERATIVA CENTRO - TRAZA MAGENTA + GPS)
+# PESTAÑA 2: MAPA DE RED (REGIÓN OPERATIVA CENTRO - COLOR POR LÍNEA + GPS)
 # =============================================================================
 with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
-    st.caption("Trazado oficial en magenta de las 9 líneas LAT de Región Centro (Chaco, Corrientes y Formosa), con cálculo de distancias GPS, superficie en m² y hectáreas de desmonte.")
+    st.caption("Visualización diferenciada por color de las 9 líneas LAT de Región Centro (Chaco, Corrientes y Formosa), con cálculo de distancias GPS, superficie en m² y hectáreas de desmonte.")
 
     cm1, cm2, cm3, cm4 = st.columns([2, 1.5, 1.5, 2])
     with cm1:
         mapa_linea_sel = st.selectbox(
             "⚡ Seleccionar Línea LAT:",
-            options=["TODAS (REGIÓN CENTRO MAGENTA)"] + LINEAS_SIGLAS,
+            options=["TODAS (REGIÓN CENTRO MULTICOLOR)"] + LINEAS_SIGLAS,
             key="map_linea_sel"
         )
     with cm2:
@@ -1046,7 +1046,7 @@ with tab_mapa:
     with cm3:
         capa_operativa = st.selectbox(
             "🎨 Capa Operativa sobre Piquetes:",
-            options=["Traza Oficial Magenta", "Avance Desmonte (%)", "Perfilado Real (Campo)", "PAT Medida Real (Campo)"],
+            options=["Color Distintivo por Línea", "Avance Desmonte (%)", "Perfilado Real (Campo)", "PAT Medida Real (Campo)"],
             key="map_capa_op"
         )
     with cm4:
@@ -1063,7 +1063,6 @@ with tab_mapa:
         df_map = df_gps_all.copy() if mapa_linea_sel.startswith("TODAS") else df_gps_all[df_gps_all["linea"] == mapa_linea_sel].copy()
         df_map = df_map.sort_values(["linea", "orden"]).reset_index(drop=True)
 
-        # Recalcular distancias exactas entre piquetes consecutivos de cada línea
         dist_m_list = []
         for sig, grp in df_map.groupby("linea", sort=False):
             lats = grp["latitud"].tolist()
@@ -1099,11 +1098,13 @@ with tab_mapa:
         mk4.metric("Superficie Limpia (Desmonte)", f"{ha_limpias_vista:.2f} ha", f"{pct_limpio_vista:.1f}% limpio")
         mk5.metric("Piquetes Campo (Perf / PAT)", f"{int(df_map['tiene_perf'].sum())} / {int(df_map['tiene_pat'].sum())}")
 
-        # Construcción del Mapa Interactivo con go.Scattermap (Plotly 6+)
+        # Construcción del Mapa Interactivo con colores únicos por línea
         fig_map = go.Figure()
 
         for sig, grp in df_map.groupby("linea", sort=False):
             grp_ord = grp.sort_values("orden")
+            color_linea = CATALOGO_LAT.get(sig, {}).get("color", "#D946EF")
+
             hover_txts = [
                 f"<b>LAT {r.linea} — Piquete {r.piquete}</b><br>"
                 f"Tipo: {r.tipo} | Estructura: {r.estructura}<br>"
@@ -1114,29 +1115,31 @@ with tab_mapa:
                 for r in grp_ord.itertuples()
             ]
 
+            # Traza de línea con su color distintivo
             fig_map.add_trace(go.Scattermap(
                 lat=grp_ord["latitud"],
                 lon=grp_ord["longitud"],
                 mode="lines",
-                line=dict(width=3.5, color="#D946EF"),
+                line=dict(width=4, color=color_linea),
                 name=f"LAT {sig}",
                 hoverinfo="skip"
             ))
 
+            # Color de marcadores según la capa seleccionada
             if capa_operativa == "Avance Desmonte (%)":
-                colores_pts = ["#10B981" if p >= 80 else ("#F59E0B" if p > 0 else "#D946EF") for p in grp_ord["pct_desmonte"]]
+                colores_pts = ["#10B981" if p >= 80 else ("#F59E0B" if p > 0 else color_linea) for p in grp_ord["pct_desmonte"]]
             elif capa_operativa == "Perfilado Real (Campo)":
-                colores_pts = ["#3B82F6" if ok else "#D946EF" for ok in grp_ord["tiene_perf"]]
+                colores_pts = ["#3B82F6" if ok else color_linea for ok in grp_ord["tiene_perf"]]
             elif capa_operativa == "PAT Medida Real (Campo)":
-                colores_pts = ["#F59E0B" if ok else "#D946EF" for ok in grp_ord["tiene_pat"]]
+                colores_pts = ["#F59E0B" if ok else color_linea for ok in grp_ord["tiene_pat"]]
             else:
-                colores_pts = "#C026D3"
+                colores_pts = color_linea
 
             fig_map.add_trace(go.Scattermap(
                 lat=grp_ord["latitud"],
                 lon=grp_ord["longitud"],
                 mode="markers",
-                marker=dict(size=7 if not mapa_linea_sel.startswith("TODAS") else 5.5, color=colores_pts),
+                marker=dict(size=7.5 if not mapa_linea_sel.startswith("TODAS") else 6, color=colores_pts),
                 name=f"Piquetes {sig}",
                 text=hover_txts,
                 hovertemplate="%{text}<extra></extra>",
@@ -1157,7 +1160,7 @@ with tab_mapa:
             margin=dict(l=0, r=0, t=10, b=0),
             legend=dict(
                 orientation="h", yanchor="top", y=0.99, xanchor="left", x=0.01,
-                bgcolor="rgba(15, 23, 42, 0.85)", font=dict(color="#FFFFFF", size=11)
+                bgcolor="rgba(15, 23, 42, 0.88)", font=dict(color="#FFFFFF", size=11)
             )
         )
         st.plotly_chart(fig_map, use_container_width=True, key="mapa_red_region_centro")
