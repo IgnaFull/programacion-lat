@@ -127,6 +127,35 @@ MESES_ES = {
     7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"
 }
 
+def normalizar_sigla_lat(nombre):
+    if not nombre:
+        return ""
+    s = str(nombre).strip().upper()
+    equivalencias = {
+        "SMA-ECO": "ECO-SMA",
+        "RES-BAR 1": "RES-BAR1",
+        "RES-BAR 2": "RES-BAR2",
+        "RES BAR 1": "RES-BAR1",
+        "RES BAR 2": "RES-BAR2",
+    }
+    return equivalencias.get(s, s)
+
+def parsear_fecha_semana(f_val):
+    """Convierte fecha string a (anio, semana_iso)."""
+    try:
+        s = str(f_val).strip()[:10]
+        if len(s) == 10 and s[4] == "-":
+            dt = date(int(s[:4]), int(s[5:7]), int(s[8:10]))
+            iso = dt.isocalendar()
+            return iso[0], iso[1]
+        elif len(s) == 10 and s[2] == "/":
+            dt = date(int(s[6:10]), int(s[3:5]), int(s[:2]))
+            iso = dt.isocalendar()
+            return iso[0], iso[1]
+    except Exception:
+        pass
+    return None, None
+
 def generar_mapa_semanas(anio):
     primer_dia = date(anio, 1, 1)
     inicio_s1 = primer_dia - timedelta(days=primer_dia.weekday())
@@ -146,7 +175,7 @@ def generar_mapa_semanas(anio):
     return pd.DataFrame(semanas)
 
 # =============================================================================
-# 3. PERSISTENCIA DE DATOS (SUPABASE + RESPALDO SQLITE LOCAL)
+# 3. PERSISTENCIA DE DATOS E INTEGRACIÓN CON TABLAS REALES DE SUPABASE
 # =============================================================================
 @st.cache_resource
 def init_supabase():
@@ -187,7 +216,7 @@ def get_sqlite_conn():
     conn.commit()
     return conn
 
-def db_fetch_all():
+def db_fetch_plan():
     cols = [
         "id", "anio", "linea", "cuadrilla", "tarea", "tramo_desc",
         "semana_inicio", "semana_fin", "prog_km", "ejec_km",
@@ -204,13 +233,76 @@ def db_fetch_all():
                     df[c] = 0 if "km" in c or "piq" in c else None
             return df[cols]
         except Exception as e:
-            st.warning(f"Aviso consultando Supabase: {e}")
+            st.warning(f"Aviso consultando plan_mantenimiento_enre: {e}")
             return pd.DataFrame(columns=cols)
 
     conn = get_sqlite_conn()
     df = pd.read_sql_query("SELECT * FROM plan_mantenimiento_enre ORDER BY semana_inicio ASC", conn)
     conn.close()
     return df
+
+@st.cache_data(ttl=60)
+def fetch_datos_reales_supabase():
+    """Lee los avances reales registrados en campo desde 'relevamientos' (Perfilado) y 'mediciones_pat' (PAT)."""
+    df_perf = pd.DataFrame()
+    df_pat = pd.DataFrame()
+    if not MODO_NUBE:
+        return df_perf, df_pat
+
+    # 1. Leer Perfilado de Aisladores (relevamientos)
+    try:
+        rows_perf = []
+        offset = 0
+        while True:
+            r = sb_client.table("relevamientos").select("linea, piquete, fecha").range(offset, offset + 999).execute()
+            if not r.data:
+                break
+            rows_perf.extend(r.data)
+            if len(r.data) < 1000:
+                break
+            offset += 1000
+        if rows_perf:
+            df_perf = pd.DataFrame(rows_perf).drop_duplicates(subset=["linea", "piquete", "fecha"])
+            df_perf["sigla"] = df_perf["linea"].apply(normalizar_sigla_lat)
+            parsed = df_perf["fecha"].apply(parsear_fecha_semana)
+            df_perf["anio"] = [p[0] for p in parsed]
+            df_perf["semana"] = [p[1] for p in parsed]
+    except Exception:
+        pass
+
+    # 2. Leer Mediciones de Puesta a Tierra (mediciones_pat)
+    try:
+        rows_pat = []
+        offset = 0
+        while True:
+            r = sb_client.table("mediciones_pat").select("*").range(offset, offset + 999).execute()
+            if not r.data:
+                break
+            rows_pat.extend(r.data)
+            if len(r.data) < 1000:
+                break
+            offset += 1000
+        if rows_pat:
+            df_pat = pd.DataFrame(rows_pat)
+            col_lin = next((c for c in ["linea", "lat", "linea_lat"] if c in df_pat.columns), None)
+            col_piq = next((c for c in ["piquete", "estructura", "nro_piquete"] if c in df_pat.columns), None)
+            col_fec = next((c for c in ["fecha", "created_at", "fecha_medicion"] if c in df_pat.columns), None)
+
+            if col_lin and col_piq:
+                df_pat["sigla"] = df_pat[col_lin].apply(normalizar_sigla_lat)
+                df_pat["piq_id"] = df_pat[col_piq].astype(str).str.strip()
+                if col_fec:
+                    parsed_p = df_pat[col_fec].apply(parsear_fecha_semana)
+                    df_pat["anio"] = [p[0] for p in parsed_p]
+                    df_pat["semana"] = [p[1] for p in parsed_p]
+                else:
+                    df_pat["anio"] = date.today().year
+                    df_pat["semana"] = 1
+                df_pat = df_pat.drop_duplicates(subset=["sigla", "piq_id", "anio"])
+    except Exception:
+        pass
+
+    return df_perf, df_pat
 
 def db_insert_registro(reg):
     if MODO_NUBE:
@@ -269,22 +361,20 @@ def db_delete_registro(reg_id):
     conn.commit()
     conn.close()
 
-def cargar_datos_demo(anio_target):
-    demos = [
-        {"anio": anio_target, "linea": "ECO-SMA", "cuadrilla": "Cuadrilla 1 - Desmonte y Limpieza", "tarea": "Limpieza de Electroducto / Desmonte (Franja 22m)", "tramo_desc": "Piq. 1 a 126 (Traza Completa)", "semana_inicio": 2, "semana_fin": 7, "prog_km": 30.47, "ejec_km": 30.47, "prog_piq": 126, "ejec_piq": 126, "ot": "OT-201", "estado": "Ejecutado", "observaciones": "Franja de 22m (11m+11m) despejada s/ AEA 95301."},
-        {"anio": anio_target, "linea": "SCA-BVI", "cuadrilla": "Cuadrilla 1 - Desmonte y Limpieza", "tarea": "Limpieza de Electroducto / Desmonte (Franja 22m)", "tramo_desc": "Piq. 1 a 250", "semana_inicio": 8, "semana_fin": 18, "prog_km": 65.00, "ejec_km": 48.50, "prog_piq": 250, "ejec_piq": 185, "ot": "OT-215", "estado": "En Ejecución", "observaciones": "Monte nativo denso en zona bañados."},
-        {"anio": anio_target, "linea": "BVI-GOY", "cuadrilla": "Cuadrilla 1 - Desmonte y Limpieza", "tarea": "Limpieza de Electroducto / Desmonte (Franja 22m)", "tramo_desc": "Piq. 1 a 303", "semana_inicio": 20, "semana_fin": 30, "prog_km": 77.70, "ejec_km": 0.0, "prog_piq": 303, "ejec_piq": 0, "ot": "OT-240", "estado": "Programado", "observaciones": "Programado 2do trimestre."},
-        {"anio": anio_target, "linea": "RES-LLE", "cuadrilla": "Cuadrilla 2 - Alturas y TCT", "tarea": "Perfilado de Aisladores", "tramo_desc": "Piq. 1 a 223", "semana_inicio": 4, "semana_fin": 10, "prog_km": 62.80, "ejec_km": 62.80, "prog_piq": 223, "ejec_piq": 223, "ot": "OT-208", "estado": "Ejecutado", "observaciones": "Detectadas 4 cadenas críticas en retenciones."},
-        {"anio": anio_target, "linea": "RES-LLE", "cuadrilla": "Cuadrilla 2 - Alturas y TCT", "tarea": "Cambio de Aisladores (Correctivo)", "tramo_desc": "Retenciones Piq. 42, 88, 140, 195", "semana_inicio": 12, "semana_fin": 14, "prog_km": 0.0, "ejec_km": 0.0, "prog_piq": 4, "ejec_piq": 4, "ot": "OT-222", "estado": "Ejecutado", "observaciones": "Reemplazo con TCT sin corte de servicio."},
-        {"anio": anio_target, "linea": "LLE-MAN", "cuadrilla": "Cuadrilla 3 - Puesta a Tierra (PAT)", "tarea": "Medición de PAT", "tramo_desc": "Piq. 1 a 162", "semana_inicio": 6, "semana_fin": 12, "prog_km": 46.60, "ejec_km": 46.60, "prog_piq": 162, "ejec_piq": 162, "ot": "OT-211", "estado": "Ejecutado", "observaciones": "14 estructuras superaron 40 Ohm."},
-        {"anio": anio_target, "linea": "LLE-MAN", "cuadrilla": "Cuadrilla 3 - Puesta a Tierra (PAT)", "tarea": "Reparación de PAT", "tramo_desc": "14 Estructuras Observadas", "semana_inicio": 13, "semana_fin": 16, "prog_km": 0.0, "ejec_km": 0.0, "prog_piq": 14, "ejec_piq": 10, "ot": "OT-229", "estado": "En Ejecución", "observaciones": "Reconexión de bajadas y jabalinas."},
-        {"anio": anio_target, "linea": "RES-BAR1", "cuadrilla": "Cuadrilla 4 - Recorrido e Inspección", "tarea": "Recorrido con Dron", "tramo_desc": "Traza Completa", "semana_inicio": 5, "semana_fin": 6, "prog_km": 30.20, "ejec_km": 30.20, "prog_piq": 149, "ejec_piq": 149, "ot": "OT-205", "estado": "Ejecutado", "observaciones": "Inspección termográfica y visual HD."},
-        {"anio": anio_target, "linea": "RES-BAR2", "cuadrilla": "Cuadrilla 4 - Recorrido e Inspección", "tarea": "Recorrido Visual Rápido", "tramo_desc": "Traza Completa", "semana_inicio": 9, "semana_fin": 10, "prog_km": 31.40, "ejec_km": 31.40, "prog_piq": 154, "ejec_piq": 154, "ot": "OT-218", "estado": "Ejecutado", "observaciones": "Sin novedades críticas en franja."},
-        {"anio": anio_target, "linea": "RES-CCE", "cuadrilla": "Cuadrilla 4 - Recorrido e Inspección", "tarea": "Recorrido Visual Lento", "tramo_desc": "Cruce Río Paraná y accesos", "semana_inicio": 15, "semana_fin": 17, "prog_km": 34.20, "ejec_km": 18.00, "prog_piq": 100, "ejec_piq": 52, "ot": "OT-233", "estado": "En Ejecución", "observaciones": "Verificación detallada de herrajes."},
-        {"anio": anio_target, "linea": "RES-SCA", "cuadrilla": "Cuadrilla 2 - Alturas y TCT", "tarea": "Perfilado de Aisladores", "tramo_desc": "Piq. 1 a 150", "semana_inicio": 26, "semana_fin": 33, "prog_km": 42.00, "ejec_km": 0.0, "prog_piq": 150, "ejec_piq": 0, "ot": "OT-255", "estado": "Programado", "observaciones": "Planificado 2do semestre."},
-    ]
-    for d in demos:
-        db_insert_registro(d)
+def db_vaciar_plan_completo():
+    """Borra todos los registros de la tabla plan_mantenimiento_enre (elimina los datos ficticios)."""
+    if MODO_NUBE:
+        try:
+            sb_client.table("plan_mantenimiento_enre").delete().gte("id", 0).execute()
+            return
+        except Exception as e:
+            st.error(f"Error vaciando tabla en Supabase: {e}")
+            return
+
+    conn = get_sqlite_conn()
+    conn.execute("DELETE FROM plan_mantenimiento_enre")
+    conn.commit()
+    conn.close()
 
 # =============================================================================
 # 4. GENERADORES DE INFORMES DE AUDITORÍA ENRE (PDF Y EXCEL)
@@ -314,34 +404,36 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
         sub_style
     ))
 
-    story.append(Paragraph("<b>1. INDICADORES DE LIMPIEZA DE ELECTRODUCTO (CUADRILLA 1) Y COBERTURA POR LÍNEA</b>", styles["Normal"]))
+    story.append(Paragraph("<b>1. INDICADORES DE LIMPIEZA DE ELECTRODUCTO (CUADRILLA 1) Y AVANCE REAL DE CAMPO POR LÍNEA</b>", styles["Normal"]))
     story.append(Spacer(1, 5))
 
     t1_data = [[
-        "Línea", "Tramo Geográfico", "Long. Total\n(km)", "Franja Total\n(ha - 22m)",
-        "Desmonte Prog.\n(km)", "Desmonte Ejec.\n(km)", "Sup. Limpia\n(ha)",
-        "% Cumpl.\ns/ Prog.", "% Avance\ns/ Línea"
+        "Línea", "Tramo Geográfico", "Long.\n(km)", "Franja\n(ha 22m)",
+        "Desm. Prog\n(km)", "Desm. Ejec\n(km)", "Limpio\n(ha)",
+        "% Cumpl.\ns/ Prog.", "% s/\nLínea", "Perf. Real\n(piq)", "PAT Real\n(piq)"
     ]]
 
     for r in df_resumen_lineas.itertuples():
         t1_data.append([
             r.Sigla,
-            r.Tramo[:38],
+            r.Tramo[:32],
             f"{r.Km_Total:.2f}",
             f"{r.Ha_Total:.1f}",
             f"{r.Desm_Prog_Km:.2f}",
             f"{r.Desm_Ejec_Km:.2f}",
             f"{r.Desm_Ejec_Ha:.1f}",
             f"{r.Pct_Cumpl_Prog:.1f}%",
-            f"{r.Pct_Linea_Limpia:.1f}%"
+            f"{r.Pct_Linea_Limpia:.1f}%",
+            f"{r.Perf_Real_Piq}/{r.Piquetes}",
+            f"{r.PAT_Real_Piq}/{r.Piquetes}"
         ])
 
-    t1 = Table(t1_data, colWidths=[58, 195, 58, 62, 68, 68, 60, 62, 62])
+    t1 = Table(t1_data, colWidths=[52, 165, 48, 52, 56, 56, 50, 54, 52, 62, 62])
     t1.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0E5E35")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.2),
         ("ALIGN", (2, 0), (-1, -1), "CENTER"),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAF9")]),
@@ -351,37 +443,38 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
     story.append(t1)
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph("<b>2. CRONOGRAMA Y EJECUCIÓN POR CUADRILLA (ALTAS TENSIONES REGIÓN CENTRO)</b>", styles["Normal"]))
-    story.append(Spacer(1, 5))
+    if not df_tareas.empty:
+        story.append(Paragraph("<b>2. CRONOGRAMA Y EJECUCIÓN PROGRAMADA POR CUADRILLA</b>", styles["Normal"]))
+        story.append(Spacer(1, 5))
 
-    t2_data = [["Línea", "Cuadrilla", "Actividad", "Semanas", "Prog.\n(km / piq)", "Ejec.\n(km / piq)", "OT", "Estado"]]
-    for t in df_tareas.itertuples():
-        prog_str = f"{t.prog_km:.1f} km" if t.prog_km > 0 else f"{t.prog_piq} piq"
-        ejec_str = f"{t.ejec_km:.1f} km" if t.prog_km > 0 else f"{t.ejec_piq} piq"
-        t2_data.append([
-            t.linea,
-            t.cuadrilla.split("-")[0].strip(),
-            t.tarea[:34],
-            f"S{t.semana_inicio:02d}-S{t.semana_fin:02d}",
-            prog_str,
-            ejec_str,
-            t.ot if t.ot else "-",
-            t.estado
-        ])
+        t2_data = [["Línea", "Cuadrilla", "Actividad", "Semanas", "Prog.\n(km / piq)", "Ejec.\n(km / piq)", "OT", "Estado"]]
+        for t in df_tareas.itertuples():
+            prog_str = f"{t.prog_km:.1f} km" if t.prog_km > 0 else f"{t.prog_piq} piq"
+            ejec_str = f"{t.ejec_km:.1f} km" if t.prog_km > 0 else f"{t.ejec_piq} piq"
+            t2_data.append([
+                t.linea,
+                t.cuadrilla.split("-")[0].strip(),
+                t.tarea[:34],
+                f"S{t.semana_inicio:02d}-S{t.semana_fin:02d}",
+                prog_str,
+                ejec_str,
+                t.ot if t.ot else "-",
+                t.estado
+            ])
 
-    t2 = Table(t2_data, colWidths=[58, 72, 185, 58, 65, 65, 55, 75])
-    t2.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("ALIGN", (3, 0), (-1, -1), "CENTER"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-    ]))
-    story.append(t2)
+        t2 = Table(t2_data, colWidths=[58, 72, 185, 58, 65, 65, 55, 75])
+        t2.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("ALIGN", (3, 0), (-1, -1), "CENTER"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+        ]))
+        story.append(t2)
 
     doc.build(story)
     return buf.getvalue()
@@ -401,7 +494,7 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
         top=Side(style="thin", color="CBD5E1"), bottom=Side(style="thin", color="CBD5E1")
     )
 
-    ws1.merge_cells("A1:K1")
+    ws1.merge_cells("A1:L1")
     ws1["A1"] = f"TRANSNEA S.A. - INDICADORES DE MANTENIMIENTO Y DESMONTE (AEA 95301 - FRANJA 22M) - AÑO {anio}"
     ws1["A1"].font = font_title
     ws1["A1"].fill = fill_green
@@ -409,9 +502,10 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
     ws1.row_dimensions[1].height = 28
 
     headers_h1 = [
-        "Sigla LAT", "Tramo", "Longitud (km)", "Piquetes", "Franja Total (ha)",
+        "Sigla LAT", "Tramo", "Longitud (km)", "Piquetes Totales", "Franja Total (ha)",
         "Desmonte Prog (km)", "Desmonte Ejec (km)", "Superficie Limpia (ha)",
-        "% Cumpl. s/ Programado", "% Limpio s/ Total Línea", "Piquetes Intervenidos (TCT/PAT)"
+        "% Cumpl. s/ Programado", "% Limpio s/ Total Línea",
+        "Perfilado Real Campo (piq)", "PAT Medida Real Campo (piq)"
     ]
     for c_i, h_txt in enumerate(headers_h1, start=1):
         cell = ws1.cell(row=3, column=c_i, value=h_txt)
@@ -424,7 +518,8 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
         vals = [
             r.Sigla, r.Tramo, r.Km_Total, r.Piquetes, r.Ha_Total,
             r.Desm_Prog_Km, r.Desm_Ejec_Km, r.Desm_Ejec_Ha,
-            round(r.Pct_Cumpl_Prog, 2), round(r.Pct_Linea_Limpia, 2), r.Piq_Intervenidos
+            round(r.Pct_Cumpl_Prog, 2), round(r.Pct_Linea_Limpia, 2),
+            r.Perf_Real_Piq, r.PAT_Real_Piq
         ]
         for c_i, v in enumerate(vals, start=1):
             c = ws1.cell(row=r_i, column=c_i, value=v)
@@ -492,7 +587,7 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
 # =============================================================================
 # 5. ENCABEZADO Y SELECTOR DE HORIZONTE TEMPORAL
 # =============================================================================
-estado_cloud_txt = "☁️ Conectado a Supabase (Nube)" if MODO_NUBE else "⚠️ Modo Local (Verificar Secrets)"
+estado_cloud_txt = "☁️ Conectado a Supabase (Perfilado + PAT en vivo)" if MODO_NUBE else "⚠️ Modo Local (Configurar Secrets)"
 
 st.markdown(f"""
 <div class="banner-enre">
@@ -548,171 +643,189 @@ with st.container(border=True):
         filtro_cuadrilla = st.selectbox("👷 Filtrar Cuadrilla:", ["TODAS LAS CUADRILLAS"] + list(CUADRILLAS_CONFIG.keys()))
 
 df_semanas_vista = df_semanas_anio[(df_semanas_anio["semana"] >= s_desde) & (df_semanas_anio["semana"] <= s_hasta)].copy()
-df_raw = db_fetch_all()
+df_raw = db_fetch_plan()
+df_perf_real, df_pat_real = fetch_datos_reales_supabase()
 
 tab_indicadores, tab_cronograma, tab_cargar, tab_gestion = st.tabs([
     "📊 Indicadores y Auditoría ENRE",
     "🗓️ Cronograma Semanal",
     "➕ Programar Actividad",
-    "✏️ Actualizar Avance / Reprogramar"
+    "✏️ Actualizar Avance / Limpiar Datos"
 ])
 
 # =============================================================================
-# PESTAÑA 1: INDICADORES DE DESMONTE (AEA 95301) Y 4 CUADRILLAS + INFORMES ENRE
+# PESTAÑA 1: INDICADORES DE DESMONTE (AEA 95301) + DATOS REALES PERFILADO/PAT
 # =============================================================================
 with tab_indicadores:
-    if df_raw.empty:
-        st.warning("No hay registros cargados para el año seleccionado.")
-        if st.button("🚀 Cargar Plan de Ejemplo Región Centro (4 Cuadrillas) para Presentación", type="primary"):
-            cargar_datos_demo(anio_sel)
-            st.rerun()
-    else:
-        df_anio = df_raw[df_raw["anio"] == anio_sel].copy()
-        df_horizonte = df_anio[(df_anio["semana_fin"] >= s_desde) & (df_anio["semana_inicio"] <= s_hasta)].copy()
+    df_anio = df_raw[df_raw["anio"] == anio_sel].copy() if not df_raw.empty else pd.DataFrame(columns=df_raw.columns)
+    df_horizonte = df_anio[(df_anio["semana_fin"] >= s_desde) & (df_anio["semana_inicio"] <= s_hasta)].copy() if not df_anio.empty else df_anio
 
-        df_desm = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 1 - Desmonte y Limpieza"]
-        km_desm_prog = df_desm["prog_km"].sum()
-        km_desm_ejec = df_desm["ejec_km"].sum()
-        ha_desm_ejec = round(km_desm_ejec * FACTOR_HA_POR_KM, 2)
-        pct_cumpl_desm = (km_desm_ejec / km_desm_prog * 100) if km_desm_prog > 0 else 0.0
-        pct_red_limpia = (km_desm_ejec / TOTAL_KM_RED * 100) if TOTAL_KM_RED > 0 else 0.0
+    # Filtrar registros reales de Perfilado y PAT al año y ventana de semanas activa
+    perf_ventana = pd.DataFrame()
+    if not df_perf_real.empty:
+        perf_ventana = df_perf_real[
+            (df_perf_real["anio"] == anio_sel) &
+            (df_perf_real["semana"] >= s_desde) &
+            (df_perf_real["semana"] <= s_hasta)
+        ]
 
-        df_c2 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 2 - Alturas y TCT"]
-        piq_perf_ejec = df_c2[df_c2["tarea"] == "Perfilado de Aisladores"]["ejec_piq"].sum()
-        piq_aisl_camb = df_c2[df_c2["tarea"] == "Cambio de Aisladores (Correctivo)"]["ejec_piq"].sum()
+    pat_ventana = pd.DataFrame()
+    if not df_pat_real.empty:
+        pat_ventana = df_pat_real[
+            (df_pat_real["anio"] == anio_sel) &
+            (df_pat_real["semana"] >= s_desde) &
+            (df_pat_real["semana"] <= s_hasta)
+        ]
 
-        df_c3 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 3 - Puesta a Tierra (PAT)"]
-        piq_pat_med = df_c3[df_c3["tarea"] == "Medición de PAT"]["ejec_piq"].sum()
-        piq_pat_rep = df_c3[df_c3["tarea"] == "Reparación de PAT"]["ejec_piq"].sum()
+    # Cálculos Cuadrilla 1 (Desmonte)
+    df_desm = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 1 - Desmonte y Limpieza"] if not df_horizonte.empty else pd.DataFrame()
+    km_desm_prog = df_desm["prog_km"].sum() if not df_desm.empty else 0.0
+    km_desm_ejec = df_desm["ejec_km"].sum() if not df_desm.empty else 0.0
+    ha_desm_ejec = round(km_desm_ejec * FACTOR_HA_POR_KM, 2)
+    pct_cumpl_desm = (km_desm_ejec / km_desm_prog * 100) if km_desm_prog > 0 else 0.0
+    pct_red_limpia = (km_desm_ejec / TOTAL_KM_RED * 100) if TOTAL_KM_RED > 0 else 0.0
 
-        df_c4 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 4 - Recorrido e Inspección"]
-        km_rec_dron = df_c4[df_c4["tarea"] == "Recorrido con Dron"]["ejec_km"].sum()
-        km_rec_vis = df_c4[df_c4["tarea"].str.contains("Visual")]["ejec_km"].sum()
+    # Cálculos Cuadrilla 2 (Datos reales de Supabase 'relevamientos' + cambios aisladores del plan)
+    piq_perf_real_total = perf_ventana["piquete"].nunique() if not perf_ventana.empty else 0
+    df_c2 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 2 - Alturas y TCT"] if not df_horizonte.empty else pd.DataFrame()
+    piq_aisl_camb = df_c2[df_c2["tarea"] == "Cambio de Aisladores (Correctivo)"]["ejec_piq"].sum() if not df_c2.empty else 0
 
-        st.markdown("#### 🌲 Cuadrilla 1: Limpieza de Electroducto (Franja Servidumbre 22 m — AEA 95301)")
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Desmonte Programado", f"{km_desm_prog:.2f} km", f"{km_desm_prog * FACTOR_HA_POR_KM:.1f} ha")
-        k2.metric("Desmonte Ejecutado", f"{km_desm_ejec:.2f} km", f"{ha_desm_ejec:.1f} ha limpias")
-        k3.metric("% Cumpl. s/ Programado", f"{pct_cumpl_desm:.1f}%", delta=f"{km_desm_ejec - km_desm_prog:.2f} km")
-        k4.metric("% Avance s/ Red Total", f"{pct_red_limpia:.2f}%", f"de {TOTAL_KM_RED} km totales")
-        k5.metric("Ancho Normativo AEA", "22 metros", "11m + 11m eje línea")
+    # Cálculos Cuadrilla 3 (Datos reales de Supabase 'mediciones_pat' + reparaciones del plan)
+    piq_pat_real_total = pat_ventana["piq_id"].nunique() if not pat_ventana.empty else 0
+    df_c3 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 3 - Puesta a Tierra (PAT)"] if not df_horizonte.empty else pd.DataFrame()
+    piq_pat_rep = df_c3[df_c3["tarea"] == "Reparación de PAT"]["ejec_piq"].sum() if not df_c3.empty else 0
 
-        st.markdown("#### 👷 Resumen Operativo Cuadrillas 2, 3 y 4")
-        c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
-        c_kpi1.metric("Cuadrilla 2 (TCT)", f"{int(piq_perf_ejec)} piq. perfilados", f"{int(piq_aisl_camb)} cambios aislador")
-        c_kpi2.metric("Cuadrilla 3 (PAT)", f"{int(piq_pat_med)} PAT medidas", f"{int(piq_pat_rep)} PAT reparadas")
-        c_kpi3.metric("Cuadrilla 4 (Dron)", f"{km_rec_dron:.2f} km", "Inspección aérea HD/IR")
-        c_kpi4.metric("Cuadrilla 4 (Visual)", f"{km_rec_vis:.2f} km", "Recorrido lento/rápido")
+    # Cálculos Cuadrilla 4 (Recorridos)
+    df_c4 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 4 - Recorrido e Inspección"] if not df_horizonte.empty else pd.DataFrame()
+    km_rec_dron = df_c4[df_c4["tarea"] == "Recorrido con Dron"]["ejec_km"].sum() if not df_c4.empty else 0.0
+    km_rec_vis = df_c4[df_c4["tarea"].str.contains("Visual")]["ejec_km"].sum() if not df_c4.empty else 0.0
 
-        st.divider()
+    st.markdown("#### 🌲 Cuadrilla 1: Limpieza de Electroducto (Franja Servidumbre 22 m — AEA 95301)")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Desmonte Programado", f"{km_desm_prog:.2f} km", f"{km_desm_prog * FACTOR_HA_POR_KM:.1f} ha")
+    k2.metric("Desmonte Ejecutado", f"{km_desm_ejec:.2f} km", f"{ha_desm_ejec:.1f} ha limpias")
+    k3.metric("% Cumpl. s/ Programado", f"{pct_cumpl_desm:.1f}%", delta=f"{km_desm_ejec - km_desm_prog:.2f} km")
+    k4.metric("% Avance s/ Red Total", f"{pct_red_limpia:.2f}%", f"de {TOTAL_KM_RED} km totales")
+    k5.metric("Ancho Normativo AEA", "22 metros", "11m + 11m eje línea")
 
-        filas_lineas = []
-        for sigla, info in CATALOGO_LAT.items():
-            km_tot = info["km"]
-            piq_tot = info["piquetes"]
-            ha_tot = round(km_tot * FACTOR_HA_POR_KM, 2)
+    st.markdown("#### 👷 Resumen Operativo Cuadrillas 2, 3 y 4 (Sincronizado con Campo)")
+    c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
+    c_kpi1.metric("Cuadrilla 2 (Perfilado Real)", f"{int(piq_perf_real_total)} piq.", f"{int(piq_aisl_camb)} cambios aislador")
+    c_kpi2.metric("Cuadrilla 3 (PAT Real)", f"{int(piq_pat_real_total)} piq.", f"{int(piq_pat_rep)} PAT reparadas")
+    c_kpi3.metric("Cuadrilla 4 (Dron)", f"{km_rec_dron:.2f} km", "Inspección aérea HD/IR")
+    c_kpi4.metric("Cuadrilla 4 (Visual)", f"{km_rec_vis:.2f} km", "Recorrido lento/rápido")
 
-            sub_l_desm = df_desm[df_desm["linea"] == sigla]
-            d_prog = sub_l_desm["prog_km"].sum()
-            d_ejec = sub_l_desm["ejec_km"].sum()
-            d_ha = round(d_ejec * FACTOR_HA_POR_KM, 2)
+    st.divider()
 
-            pct_prog = (d_ejec / d_prog * 100) if d_prog > 0 else 0.0
-            pct_linea = (d_ejec / km_tot * 100) if km_tot > 0 else 0.0
+    # Tabla consolidada por Línea LAT cruzando Planificación + Datos Reales
+    filas_lineas = []
+    for sigla, info in CATALOGO_LAT.items():
+        km_tot = info["km"]
+        piq_tot = info["piquetes"]
+        ha_tot = round(km_tot * FACTOR_HA_POR_KM, 2)
 
-            sub_l_all = df_horizonte[df_horizonte["linea"] == sigla]
-            piq_interv = int(sub_l_all[sub_l_all["cuadrilla"] != "Cuadrilla 1 - Desmonte y Limpieza"]["ejec_piq"].sum())
+        sub_l_desm = df_desm[df_desm["linea"] == sigla] if not df_desm.empty else pd.DataFrame()
+        d_prog = sub_l_desm["prog_km"].sum() if not sub_l_desm.empty else 0.0
+        d_ejec = sub_l_desm["ejec_km"].sum() if not sub_l_desm.empty else 0.0
+        d_ha = round(d_ejec * FACTOR_HA_POR_KM, 2)
 
-            filas_lineas.append({
-                "Sigla": sigla,
-                "Tramo": info["tramo"],
-                "Km_Total": km_tot,
-                "Piquetes": piq_tot,
-                "Ha_Total": ha_tot,
-                "Desm_Prog_Km": d_prog,
-                "Desm_Ejec_Km": d_ejec,
-                "Desm_Ejec_Ha": d_ha,
-                "Pct_Cumpl_Prog": pct_prog,
-                "Pct_Linea_Limpia": pct_linea,
-                "Piq_Intervenidos": piq_interv
-            })
+        pct_prog = (d_ejec / d_prog * 100) if d_prog > 0 else 0.0
+        pct_linea = (d_ejec / km_tot * 100) if km_tot > 0 else 0.0
 
-        df_resumen_lineas = pd.DataFrame(filas_lineas)
+        perf_l_real = int(perf_ventana[perf_ventana["sigla"] == sigla]["piquete"].nunique()) if not perf_ventana.empty else 0
+        pat_l_real = int(pat_ventana[pat_ventana["sigla"] == sigla]["piq_id"].nunique()) if not pat_ventana.empty else 0
 
-        col_g1, col_g2 = st.columns([1.15, 0.85])
-        with col_g1:
-            st.markdown("##### 📊 Avance de Limpieza de Electroducto por Línea (% sobre Traza Total)")
-            fig_bar = go.Figure()
-            fig_bar.add_trace(go.Bar(
-                y=df_resumen_lineas["Sigla"],
-                x=df_resumen_lineas["Pct_Linea_Limpia"],
-                orientation="h",
-                text=[f" <b>{r.Pct_Linea_Limpia:.1f}%</b> ({r.Desm_Ejec_Km:.1f} / {r.Km_Total:.1f} km)" for r in df_resumen_lineas.itertuples()],
-                textposition="outside",
-                cliponaxis=False,
-                marker=dict(color="#10B981", line=dict(color="#FFFFFF", width=1)),
-            ))
-            fig_bar.update_layout(
-                template="plotly_dark",
-                plot_bgcolor="#0F172A", paper_bgcolor="#0F172A",
-                xaxis=dict(range=[0, 125], title="% de Línea Limpia (Ancho 22m)", gridcolor="#334155"),
-                yaxis=dict(autorange="reversed", gridcolor="#334155"),
-                height=380, margin=dict(l=20, r=40, t=20, b=20)
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
+        filas_lineas.append({
+            "Sigla": sigla,
+            "Tramo": info["tramo"],
+            "Km_Total": km_tot,
+            "Piquetes": piq_tot,
+            "Ha_Total": ha_tot,
+            "Desm_Prog_Km": d_prog,
+            "Desm_Ejec_Km": d_ejec,
+            "Desm_Ejec_Ha": d_ha,
+            "Pct_Cumpl_Prog": pct_prog,
+            "Pct_Linea_Limpia": pct_linea,
+            "Perf_Real_Piq": perf_l_real,
+            "PAT_Real_Piq": pat_l_real
+        })
 
-        with col_g2:
-            st.markdown("##### 📋 Tabla de Control por Línea LAT")
-            df_show_l = df_resumen_lineas[[
-                "Sigla", "Km_Total", "Desm_Prog_Km", "Desm_Ejec_Km", "Desm_Ejec_Ha", "Pct_Cumpl_Prog", "Pct_Linea_Limpia"
-            ]].rename(columns={
-                "Sigla": "Línea", "Km_Total": "Total km", "Desm_Prog_Km": "Prog. km",
-                "Desm_Ejec_Km": "Ejec. km", "Desm_Ejec_Ha": "Limpio (ha)",
-                "Pct_Cumpl_Prog": "% s/ Prog.", "Pct_Linea_Limpia": "% s/ Línea"
-            })
-            st.dataframe(
-                df_show_l.style.format({
-                    "Total km": "{:.2f}", "Prog. km": "{:.2f}", "Ejec. km": "{:.2f}",
-                    "Limpio (ha)": "{:.1f}", "% s/ Prog.": "{:.1f}%", "% s/ Línea": "{:.1f}%"
-                }),
-                use_container_width=True, hide_index=True, height=380
-            )
+    df_resumen_lineas = pd.DataFrame(filas_lineas)
 
-        st.divider()
-        st.markdown("#### 🏛️ Exportación de Informes Oficiales para Auditoría ENRE (AEA 95301)")
-        col_ex1, col_ex2 = st.columns(2)
-        horizonte_corto = horizonte_sel.split("(")[0].strip()
+    col_g1, col_g2 = st.columns([1.05, 0.95])
+    with col_g1:
+        st.markdown("##### 📊 Avance de Limpieza de Electroducto por Línea (% Traza Total)")
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            y=df_resumen_lineas["Sigla"],
+            x=df_resumen_lineas["Pct_Linea_Limpia"],
+            orientation="h",
+            text=[f" <b>{r.Pct_Linea_Limpia:.1f}%</b> ({r.Desm_Ejec_Km:.1f} / {r.Km_Total:.1f} km)" for r in df_resumen_lineas.itertuples()],
+            textposition="outside",
+            cliponaxis=False,
+            marker=dict(color="#10B981", line=dict(color="#FFFFFF", width=1)),
+        ))
+        fig_bar.update_layout(
+            template="plotly_dark",
+            plot_bgcolor="#0F172A", paper_bgcolor="#0F172A",
+            xaxis=dict(range=[0, 128], title="% de Línea Limpia (Ancho 22m)", gridcolor="#334155"),
+            yaxis=dict(autorange="reversed", gridcolor="#334155"),
+            height=380, margin=dict(l=20, r=40, t=20, b=20)
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
 
-        with col_ex1:
-            xl_bytes = generar_excel_auditoria_enre(df_resumen_lineas, df_horizonte, df_semanas_vista, anio_sel, horizonte_corto)
+    with col_g2:
+        st.markdown("##### 📋 Tabla Consolidada por Línea (Plan + Campo Real)")
+        df_show_l = df_resumen_lineas[[
+            "Sigla", "Km_Total", "Desm_Prog_Km", "Desm_Ejec_Km", "Pct_Linea_Limpia", "Perf_Real_Piq", "PAT_Real_Piq"
+        ]].rename(columns={
+            "Sigla": "Línea", "Km_Total": "km Tot", "Desm_Prog_Km": "Desm Prog",
+            "Desm_Ejec_Km": "Desm Ejec", "Pct_Linea_Limpia": "% Limpio",
+            "Perf_Real_Piq": "Perf. Real", "PAT_Real_Piq": "PAT Real"
+        })
+        st.dataframe(
+            df_show_l.style.format({
+                "km Tot": "{:.2f}", "Desm Prog": "{:.2f}", "Desm Ejec": "{:.2f}",
+                "% Limpio": "{:.1f}%", "Perf. Real": "{:,}", "PAT Real": "{:,}"
+            }),
+            use_container_width=True, hide_index=True, height=380
+        )
+
+    st.divider()
+    st.markdown("#### 🏛️ Exportación de Informes Oficiales para Auditoría ENRE (AEA 95301)")
+    col_ex1, col_ex2 = st.columns(2)
+    horizonte_corto = horizonte_sel.split("(")[0].strip()
+
+    with col_ex1:
+        xl_bytes = generar_excel_auditoria_enre(df_resumen_lineas, df_horizonte, df_semanas_vista, anio_sel, horizonte_corto)
+        st.download_button(
+            label="📊 Descargar Matriz e Indicadores ENRE en Excel (.xlsx)",
+            data=xl_bytes,
+            file_name=f"Auditoria_ENRE_Transnea_RegionCentro_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    with col_ex2:
+        if REPORTLAB_AVAILABLE:
+            pdf_bytes = generar_pdf_auditoria_enre(df_resumen_lineas, df_horizonte, anio_sel, f"{horizonte_corto} (S{s_desde:02d} a S{s_hasta:02d})")
             st.download_button(
-                label="📊 Descargar Matriz e Indicadores ENRE en Excel (.xlsx)",
-                data=xl_bytes,
-                file_name=f"Auditoria_ENRE_Transnea_RegionCentro_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="📄 Descargar Informe Técnico Oficial ENRE en PDF (.pdf)",
+                data=pdf_bytes,
+                file_name=f"Informe_ENRE_AEA95301_Transnea_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.pdf",
+                mime="application/pdf",
+                type="primary",
                 use_container_width=True
             )
-
-        with col_ex2:
-            if REPORTLAB_AVAILABLE:
-                pdf_bytes = generar_pdf_auditoria_enre(df_resumen_lineas, df_horizonte, anio_sel, f"{horizonte_corto} (S{s_desde:02d} a S{s_hasta:02d})")
-                st.download_button(
-                    label="📄 Descargar Informe Técnico Oficial ENRE en PDF (.pdf)",
-                    data=pdf_bytes,
-                    file_name=f"Informe_ENRE_AEA95301_Transnea_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.pdf",
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True
-                )
-            else:
-                st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
+        else:
+            st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
 
 # =============================================================================
 # PESTAÑA 2: CRONOGRAMA SEMANAL (12, 6, 4, 3 Y 1 MES)
 # =============================================================================
 with tab_cronograma:
     if df_raw.empty:
-        st.info("Cargá actividades o iniciá los datos de ejemplo en la pestaña de Indicadores.")
+        st.info("No hay actividades programadas en el cronograma. Podés cargarlas en la pestaña '➕ Programar Actividad'.")
     else:
         df_crono = df_raw[(df_raw["anio"] == anio_sel) & (df_raw["semana_fin"] >= s_desde) & (df_raw["semana_inicio"] <= s_hasta)].copy()
         if filtro_cuadrilla != "TODAS LAS CUADRILLAS":
@@ -771,7 +884,7 @@ with tab_cronograma:
 # PESTAÑA 3: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
 # =============================================================================
 with tab_cargar:
-    st.markdown("### ➕ Cargar Programación de Mantenimiento")
+    st.markdown("### ➕ Cargar Programación Real de Mantenimiento")
     with st.container(border=True):
         c1, c2, c3 = st.columns([2, 2, 2])
         with c1:
@@ -830,13 +943,13 @@ with tab_cargar:
             st.rerun()
 
 # =============================================================================
-# PESTAÑA 4: ACTUALIZAR AVANCE Y REPROGRAMAR
+# PESTAÑA 4: ACTUALIZAR AVANCE Y LIMPIAR DATOS FICTICIOS
 # =============================================================================
 with tab_gestion:
     st.markdown("### ✏️ Actualizar Avances Reales y Reprogramaciones")
-    df_g = df_raw[df_raw["anio"] == anio_sel].copy()
+    df_g = df_raw[df_raw["anio"] == anio_sel].copy() if not df_raw.empty else pd.DataFrame()
     if df_g.empty:
-        st.info("No hay registros cargados para editar.")
+        st.info("No hay registros cargados en el plan.")
     else:
         opciones_ed = df_g.apply(
             lambda r: f"ID {r['id']} | {r['linea']} | {r['cuadrilla'].split('-')[0].strip()} — {r['tarea']} (S{r['semana_inicio']:02d}-S{r['semana_fin']:02d})",
@@ -870,7 +983,15 @@ with tab_gestion:
                     st.toast("Avance actualizado.", icon="✅")
                     st.rerun()
             with col_b2:
-                if st.button("🗑️ Eliminar", use_container_width=True):
+                if st.button("🗑️ Eliminar Registro", use_container_width=True):
                     db_delete_registro(id_ed)
                     st.toast("Registro eliminado.", icon="🗑️")
                     st.rerun()
+
+        st.divider()
+        with st.expander("🧹 Limpieza de Datos de Prueba / Ficticios", expanded=True):
+            st.warning("Esta acción eliminará todos los registros cargados en `plan_mantenimiento_enre` (los datos reales de Perfilado y PAT en sus respectivas tablas **no** se tocan).")
+            if st.button("🗑️ Borrar Todos los Datos Ficticios / Vaciar Plan", type="primary"):
+                db_vaciar_plan_completo()
+                st.toast("Datos ficticios eliminados correctamente.", icon="🧹")
+                st.rerun()
