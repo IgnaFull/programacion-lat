@@ -636,7 +636,7 @@ st.markdown(f"""
 with st.container(border=True):
     ch1, ch2, ch3, ch4 = st.columns([1.1, 2.2, 2.3, 1.9])
     with ch1:
-        anio_sel = st.selectbox("📅 Año Plan", [2026, 2027, 2025], index=0)
+        anio_sel = st.selectbox("📅 Año Plan", [2026, 2027, 2025], index=0, key="top_anio_sel")
     with ch2:
         horizonte_sel = st.selectbox(
             "🔭 Horizonte de Planificación",
@@ -647,7 +647,8 @@ with st.container(border=True):
                 "3 Meses (Trimestral - 13 Semanas)",
                 "1 Mes (Mensual - 4/5 Semanas)"
             ],
-            index=0
+            index=0,
+            key="top_horizonte_sel"
         )
 
     df_semanas_anio = generar_mapa_semanas(anio_sel)
@@ -657,21 +658,21 @@ with st.container(border=True):
             s_desde, s_hasta = 1, 52
             st.info("Horizonte completo: **S01 a S52** (Ene – Dic)")
         elif horizonte_sel.startswith("6 Meses"):
-            sem = st.radio("Semestre:", ["1° Semestre (Ene-Jun)", "2° Semestre (Jul-Dic)"], horizontal=True)
+            sem = st.radio("Semestre:", ["1° Semestre (Ene-Jun)", "2° Semestre (Jul-Dic)"], horizontal=True, key="top_semestre_sel")
             s_desde, s_hasta = (1, 26) if sem.startswith("1°") else (27, 52)
         elif horizonte_sel.startswith("4 Meses"):
-            cua = st.selectbox("Cuatrimestre:", ["1° Cuatrimestre (Ene-Abr)", "2° Cuatrimestre (May-Ago)", "3° Cuatrimestre (Sep-Dic)"])
+            cua = st.selectbox("Cuatrimestre:", ["1° Cuatrimestre (Ene-Abr)", "2° Cuatrimestre (May-Ago)", "3° Cuatrimestre (Sep-Dic)"], key="top_cuatri_sel")
             s_desde, s_hasta = (1, 17) if cua.startswith("1°") else ((18, 35) if cua.startswith("2°") else (36, 52))
         elif horizonte_sel.startswith("3 Meses"):
-            tri = st.selectbox("Trimestre:", ["Q1 (Ene-Mar)", "Q2 (Abr-Jun)", "Q3 (Jul-Sep)", "Q4 (Oct-Dic)"])
+            tri = st.selectbox("Trimestre:", ["Q1 (Ene-Mar)", "Q2 (Abr-Jun)", "Q3 (Jul-Sep)", "Q4 (Oct-Dic)"], key="top_trim_sel")
             s_desde, s_hasta = (1, 13) if tri.startswith("Q1") else ((14, 26) if tri.startswith("Q2") else ((27, 39) if tri.startswith("Q3") else (40, 52)))
         else:
-            mes_sel = st.selectbox("Mes:", list(MESES_ES.keys()), format_func=lambda m: f"{MESES_ES[m]} {anio_sel}", index=datetime.now().month - 1)
+            mes_sel = st.selectbox("Mes:", list(MESES_ES.keys()), format_func=lambda m: f"{MESES_ES[m]} {anio_sel}", index=datetime.now().month - 1, key="top_mes_sel")
             sems_m = df_semanas_anio[df_semanas_anio["mes_num"] == mes_sel]["semana"].tolist()
             s_desde, s_hasta = min(sems_m), max(sems_m)
 
     with ch4:
-        filtro_cuadrilla = st.selectbox("👷 Filtrar Cuadrilla:", ["TODAS LAS CUADRILLAS"] + list(CUADRILLAS_CONFIG.keys()))
+        filtro_cuadrilla = st.selectbox("👷 Filtrar Cuadrilla:", ["TODAS LAS CUADRILLAS"] + list(CUADRILLAS_CONFIG.keys()), key="top_cuad_sel")
 
 df_semanas_vista = df_semanas_anio[(df_semanas_anio["semana"] >= s_desde) & (df_semanas_anio["semana"] <= s_hasta)].copy()
 df_raw = db_fetch_plan()
@@ -691,7 +692,6 @@ with tab_indicadores:
     df_anio = df_raw[df_raw["anio"] == anio_sel].copy() if not df_raw.empty else pd.DataFrame(columns=df_raw.columns)
     df_horizonte = df_anio[(df_anio["semana_fin"] >= s_desde) & (df_anio["semana_inicio"] <= s_hasta)].copy() if not df_anio.empty else df_anio
 
-    # Filtrar registros reales de Perfilado y PAT al año y ventana de semanas activa
     perf_ventana = pd.DataFrame()
     if not df_perf_real.empty:
         perf_ventana = df_perf_real[
@@ -748,30 +748,26 @@ with tab_indicadores:
 
     st.divider()
 
-    # -------------------------------------------------------------------------
-    # SECCIÓN DE DIAGRAMAS DE TORTA (COBERTURA GLOBAL REGIÓN CENTRO)
-    # -------------------------------------------------------------------------
     st.markdown("#### 🍩 Distribución Porcentual Global — Región Centro")
     col_t1, col_t2, col_t3 = st.columns(3)
     with col_t1:
         st.plotly_chart(
             crear_grafico_torta("🌲 Desmonte Electroducto (22m)", km_desm_ejec, TOTAL_KM_RED, "km", "#10B981"),
-            use_container_width=True
+            use_container_width=True, key="pie_desmonte"
         )
     with col_t2:
         st.plotly_chart(
             crear_grafico_torta("⚡ Perfilado Aisladores (Campo)", piq_perf_real_total, TOTAL_PIQ_RED, "piq", "#3B82F6"),
-            use_container_width=True
+            use_container_width=True, key="pie_perfilado"
         )
     with col_t3:
         st.plotly_chart(
             crear_grafico_torta("🔌 Medición PAT (Campo)", piq_pat_real_total, TOTAL_PIQ_RED, "piq", "#F59E0B"),
-            use_container_width=True
+            use_container_width=True, key="pie_pat"
         )
 
     st.divider()
 
-    # Tabla consolidada por Línea LAT cruzando Planificación + Datos Reales
     filas_lineas = []
     for sigla, info in CATALOGO_LAT.items():
         km_tot = info["km"]
@@ -855,7 +851,7 @@ with tab_indicadores:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             height=450, margin=dict(l=20, r=35, t=35, b=20)
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, use_container_width=True, key="bar_comparativo_lineas")
 
     with col_g2:
         st.markdown("##### 📋 Tabla Consolidada por Línea (Plan + Campo Real)")
@@ -886,7 +882,8 @@ with tab_indicadores:
             data=xl_bytes,
             file_name=f"Auditoria_ENRE_Transnea_RegionCentro_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            use_container_width=True,
+            key="dl_excel_enre"
         )
 
     with col_ex2:
@@ -898,7 +895,8 @@ with tab_indicadores:
                 file_name=f"Informe_ENRE_AEA95301_Transnea_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.pdf",
                 mime="application/pdf",
                 type="primary",
-                use_container_width=True
+                use_container_width=True,
+                key="dl_pdf_enre"
             )
         else:
             st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
@@ -907,11 +905,10 @@ with tab_indicadores:
 # PESTAÑA 2: CRONOGRAMA SEMANAL (PLANIFICADO + EJECUCIÓN REAL DE CAMPO)
 # =============================================================================
 with tab_cronograma:
-    incluir_reales_gantt = st.checkbox("🔗 Mostrar también ejecución real registrada en Perfilado y PAT en el cronograma", value=True)
+    incluir_reales_gantt = st.checkbox("🔗 Mostrar también ejecución real registrada en Perfilado y PAT en el cronograma", value=True, key="chk_reales_gantt")
 
     filas_gantt = []
 
-    # 1. Actividades cargadas en plan_mantenimiento_enre
     if not df_raw.empty:
         df_crono = df_raw[(df_raw["anio"] == anio_sel) & (df_raw["semana_fin"] >= s_desde) & (df_raw["semana_inicio"] <= s_hasta)].copy()
         if filtro_cuadrilla != "TODAS LAS CUADRILLAS":
@@ -929,7 +926,6 @@ with tab_cronograma:
                 "texto_barra": f"S{r.semana_inicio:02d}-S{r.semana_fin:02d} ({meta_txt})"
             })
 
-    # 2. Avances reales de Perfilado y PAT desde Supabase
     if incluir_reales_gantt:
         if (filtro_cuadrilla in ["TODAS LAS CUADRILLAS", "Cuadrilla 2 - Alturas y TCT"]) and not perf_ventana.empty:
             for sig, grp in perf_ventana.groupby("sigla"):
@@ -1006,7 +1002,7 @@ with tab_cronograma:
             ),
             yaxis=dict(gridcolor="#334155")
         )
-        st.plotly_chart(fig_gantt, use_container_width=True)
+        st.plotly_chart(fig_gantt, use_container_width=True, key="gantt_semanal_main")
 
 # =============================================================================
 # PESTAÑA 3: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
@@ -1019,46 +1015,47 @@ with tab_cargar:
             sel_lat = st.selectbox(
                 "⚡ Línea de Alta Tensión (Región Centro)",
                 LINEAS_SIGLAS,
-                format_func=lambda s: f"{s} — {CATALOGO_LAT[s]['tramo']} ({CATALOGO_LAT[s]['km']} km)"
+                format_func=lambda s: f"{s} — {CATALOGO_LAT[s]['tramo']} ({CATALOGO_LAT[s]['km']} km)",
+                key="add_sel_lat"
             )
         with c2:
-            sel_cuad = st.selectbox("👷 Cuadrilla Asignada", list(CUADRILLAS_CONFIG.keys()))
+            sel_cuad = st.selectbox("👷 Cuadrilla Asignada", list(CUADRILLAS_CONFIG.keys()), key="add_sel_cuad")
         with c3:
-            sel_tarea = st.selectbox("🛠️ Actividad / Tarea", CUADRILLAS_CONFIG[sel_cuad]["tareas"])
+            sel_tarea = st.selectbox("🛠️ Actividad / Tarea", CUADRILLAS_CONFIG[sel_cuad]["tareas"], key="add_sel_tarea")
 
         info_lat = CATALOGO_LAT[sel_lat]
         st.caption(f"📏 Datos físicos de **{sel_lat}**: Longitud total **{info_lat['km']} km** | **{info_lat['piquetes']} piquetes** | Franja total 22m: **{round(info_lat['km']*2.2, 1)} ha**.")
 
         c4, c5, c6 = st.columns([2.5, 1.2, 1.2])
         with c4:
-            tramo_desc = st.text_input("📍 Tramo / Piquetes a Intervenir", value=f"Piq. 1 a {info_lat['piquetes']}")
+            tramo_desc = st.text_input("📍 Tramo / Piquetes a Intervenir", value=f"Piq. 1 a {info_lat['piquetes']}", key="add_tramo_desc")
         with c5:
-            s_ini = st.number_input("Semana Inicio", min_value=1, max_value=52, value=s_desde)
+            s_ini = st.number_input("Semana Inicio", min_value=1, max_value=52, value=s_desde, key="add_s_ini")
         with c6:
-            s_fin = st.number_input("Semana Fin", min_value=int(s_ini), max_value=52, value=min(52, int(s_ini) + 3))
+            s_fin = st.number_input("Semana Fin", min_value=int(s_ini), max_value=52, value=min(52, int(s_ini) + 3), key="add_s_fin")
 
         c7, c8, c9, c10 = st.columns(4)
         with c7:
-            prog_km = st.number_input("Meta Programada (km)", min_value=0.0, max_value=float(info_lat["km"]), value=float(info_lat["km"]) if CUADRILLAS_CONFIG[sel_cuad]["unidad_principal"] == "km" else 0.0, step=0.5)
+            prog_km = st.number_input("Meta Programada (km)", min_value=0.0, max_value=float(info_lat["km"]), value=float(info_lat["km"]) if CUADRILLAS_CONFIG[sel_cuad]["unidad_principal"] == "km" else 0.0, step=0.5, key="add_prog_km")
         with c8:
-            ejec_km = st.number_input("Avance Ejecutado (km)", min_value=0.0, max_value=float(info_lat["km"]), value=0.0, step=0.5)
+            ejec_km = st.number_input("Avance Ejecutado (km)", min_value=0.0, max_value=float(info_lat["km"]), value=0.0, step=0.5, key="add_ejec_km")
         with c9:
-            prog_piq = st.number_input("Meta Programada (Piquetes)", min_value=0, max_value=int(info_lat["piquetes"]), value=int(info_lat["piquetes"]) if CUADRILLAS_CONFIG[sel_cuad]["unidad_principal"] == "piquetes" else 0, step=1)
+            prog_piq = st.number_input("Meta Programada (Piquetes)", min_value=0, max_value=int(info_lat["piquetes"]), value=int(info_lat["piquetes"]) if CUADRILLAS_CONFIG[sel_cuad]["unidad_principal"] == "piquetes" else 0, step=1, key="add_prog_piq")
         with c10:
-            ejec_piq = st.number_input("Avance Ejecutado (Piquetes)", min_value=0, max_value=int(info_lat["piquetes"]), value=0, step=1)
+            ejec_piq = st.number_input("Avance Ejecutado (Piquetes)", min_value=0, max_value=int(info_lat["piquetes"]), value=0, step=1, key="add_ejec_piq")
 
         if sel_cuad == "Cuadrilla 1 - Desmonte y Limpieza" and prog_km > 0:
             st.info(f"🌲 Superficie de desmonte programada (ancho 22m): **{prog_km * FACTOR_HA_POR_KM:.2f} hectáreas** (Ejecutado: **{ejec_km * FACTOR_HA_POR_KM:.2f} ha**).")
 
         c11, c12, c13 = st.columns([1.5, 1.5, 3])
         with c11:
-            ot_val = st.text_input("📋 N° OT", placeholder="Ej: OT-260")
+            ot_val = st.text_input("📋 N° OT", placeholder="Ej: OT-260", key="add_ot_val")
         with c12:
-            est_val = st.selectbox("🚦 Estado", ESTADOS_TAREA, index=0)
+            est_val = st.selectbox("🚦 Estado", ESTADOS_TAREA, index=0, key="add_est_val")
         with c13:
-            obs_val = st.text_input("📝 Observaciones", placeholder="Ej: Cumplimiento plan anual ENRE.")
+            obs_val = st.text_input("📝 Observaciones", placeholder="Ej: Cumplimiento plan anual ENRE.", key="add_obs_val")
 
-        if st.button("💾 Guardar Programación", type="primary", use_container_width=True):
+        if st.button("💾 Guardar Programación", type="primary", use_container_width=True, key="btn_save_prog"):
             db_insert_registro({
                 "anio": int(anio_sel), "linea": sel_lat, "cuadrilla": sel_cuad,
                 "tarea": sel_tarea, "tramo_desc": tramo_desc.strip(),
@@ -1083,35 +1080,35 @@ with tab_gestion:
             lambda r: f"ID {r['id']} | {r['linea']} | {r['cuadrilla'].split('-')[0].strip()} — {r['tarea']} (S{r['semana_inicio']:02d}-S{r['semana_fin']:02d})",
             axis=1
         ).tolist()
-        sel_ed = st.selectbox("Seleccionar registro a actualizar:", opciones_ed)
+        sel_ed = st.selectbox("Seleccionar registro a actualizar:", opciones_ed, key="ed_sel_registro")
         id_ed = int(sel_ed.split(" ")[1])
         fila = df_g[df_g["id"] == id_ed].iloc[0]
 
         with st.container(border=True):
             e1, e2, e3, e4 = st.columns(4)
             with e1:
-                ed_est = st.selectbox("Estado", ESTADOS_TAREA, index=ESTADOS_TAREA.index(fila["estado"]) if fila["estado"] in ESTADOS_TAREA else 0)
+                ed_est = st.selectbox("Estado", ESTADOS_TAREA, index=ESTADOS_TAREA.index(fila["estado"]) if fila["estado"] in ESTADOS_TAREA else 0, key=f"ed_est_{id_ed}")
             with e2:
-                ed_km = st.number_input("Km Ejecutados", min_value=0.0, value=float(fila["ejec_km"]), step=0.5)
+                ed_km = st.number_input("Km Ejecutados", min_value=0.0, value=float(fila["ejec_km"]), step=0.5, key=f"ed_km_{id_ed}")
             with e3:
-                ed_piq = st.number_input("Piquetes Ejecutados", min_value=0, value=int(fila["ejec_piq"]), step=1)
+                ed_piq = st.number_input("Piquetes Ejecutados", min_value=0, value=int(fila["ejec_piq"]), step=1, key=f"ed_piq_{id_ed}")
             with e4:
-                ed_si = st.number_input("Semana Inicio", min_value=1, max_value=52, value=int(fila["semana_inicio"]))
+                ed_si = st.number_input("Semana Inicio", min_value=1, max_value=52, value=int(fila["semana_inicio"]), key=f"ed_si_{id_ed}")
 
             e5, e6 = st.columns([1, 3])
             with e5:
-                ed_sf = st.number_input("Semana Fin", min_value=int(ed_si), max_value=52, value=max(int(ed_si), int(fila["semana_fin"])))
+                ed_sf = st.number_input("Semana Fin", min_value=int(ed_si), max_value=52, value=max(int(ed_si), int(fila["semana_fin"])), key=f"ed_sf_{id_ed}")
             with e6:
-                ed_obs = st.text_input("Observaciones", value=str(fila["observaciones"] or ""))
+                ed_obs = st.text_input("Observaciones", value=str(fila["observaciones"] or ""), key=f"ed_obs_{id_ed}")
 
             col_b1, col_b2 = st.columns([3, 1])
             with col_b1:
-                if st.button("💾 Guardar Avance", type="primary", use_container_width=True):
+                if st.button("💾 Guardar Avance", type="primary", use_container_width=True, key=f"btn_upd_{id_ed}"):
                     db_update_avance(id_ed, ed_est, ed_km, ed_piq, ed_si, ed_sf, ed_obs)
                     st.toast("Avance actualizado.", icon="✅")
                     st.rerun()
             with col_b2:
-                if st.button("🗑️ Eliminar Registro", use_container_width=True):
+                if st.button("🗑️ Eliminar Registro", use_container_width=True, key=f"btn_del_{id_ed}"):
                     db_delete_registro(id_ed)
                     st.toast("Registro eliminado.", icon="🗑️")
                     st.rerun()
@@ -1119,7 +1116,7 @@ with tab_gestion:
         st.divider()
         with st.expander("🧹 Limpieza de Datos de Prueba / Ficticios", expanded=True):
             st.warning("Esta acción eliminará todos los registros cargados en `plan_mantenimiento_enre` (los datos reales de Perfilado y PAT en sus respectivas tablas **no** se tocan).")
-            if st.button("🗑️ Borrar Todos los Datos Ficticios / Vaciar Plan", type="primary"):
+            if st.button("🗑️ Borrar Todos los Datos Ficticios / Vaciar Plan", type="primary", key="btn_vaciar_todo"):
                 db_vaciar_plan_completo()
                 st.toast("Datos ficticios eliminados correctamente.", icon="🧹")
                 st.rerun()
