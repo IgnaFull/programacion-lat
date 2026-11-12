@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import date, datetime, timedelta
+import math
 import sqlite3
 import io
 import openpyxl
@@ -130,7 +131,9 @@ MESES_ES = {
 def normalizar_sigla_lat(nombre):
     if not nombre:
         return ""
-    s = str(nombre).strip().upper()
+    s = str(nombre).strip().upper().replace("#", "").replace("_", "-")
+    if "ECO" in s and "SMA" in s:
+        return "ECO-SMA"
     equivalencias = {
         "SMA-ECO": "ECO-SMA",
         "RES-BAR 1": "RES-BAR1",
@@ -140,8 +143,27 @@ def normalizar_sigla_lat(nombre):
     }
     return equivalencias.get(s, s)
 
+def distancia_geodesica_m(lat1, lon1, lat2, lon2):
+    """Fórmula geodésica esférica idéntica a la hoja Auxiliar Distancia (en metros)."""
+    try:
+        r1 = math.radians(90.0 - float(lat1))
+        r2 = math.radians(90.0 - float(lat2))
+        dlon = math.radians(float(lon1) - float(lon2))
+        cos_val = math.cos(r1) * math.cos(r2) + math.sin(r1) * math.sin(r2) * math.cos(dlon)
+        cos_val = max(-1.0, min(1.0, cos_val))
+        return 1000.0 * 6371.0 * math.acos(cos_val)
+    except Exception:
+        return 0.0
+
+def corregir_par_lat_lon(lat_val, lon_val):
+    """En NEA Argentina: Latitud está entre -22 y -32; Longitud está entre -54 y -63."""
+    lat = float(lat_val)
+    lon = float(lon_val)
+    if lat < -45.0 and lon > -45.0:
+        return lon, lat
+    return lat, lon
+
 def parsear_fecha_semana(f_val):
-    """Convierte fecha string a (anio, semana_iso)."""
     try:
         s = str(f_val).strip()[:10]
         if len(s) == 10 and s[4] == "-":
@@ -205,7 +227,7 @@ def crear_grafico_torta(titulo, ejecutado, total, unidad, color_ejec):
     return fig
 
 # =============================================================================
-# 3. PERSISTENCIA DE DATOS E INTEGRACIÓN CON TABLAS REALES DE SUPABASE
+# 3. PERSISTENCIA DE DATOS (PLAN ENRE + GPS PIQUETES + CAMPO REAL)
 # =============================================================================
 @st.cache_resource
 def init_supabase():
@@ -243,6 +265,21 @@ def get_sqlite_conn():
             observaciones TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS piquetes_gps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            linea TEXT NOT NULL,
+            piquete TEXT NOT NULL,
+            orden INTEGER NOT NULL,
+            latitud REAL NOT NULL,
+            longitud REAL NOT NULL,
+            dist_km REAL DEFAULT 0.0,
+            tipo TEXT DEFAULT '',
+            estructura TEXT DEFAULT '',
+            pct_desmonte REAL DEFAULT 0.0,
+            UNIQUE(linea, piquete)
+        )
+    """)
     conn.commit()
     return conn
 
@@ -271,15 +308,102 @@ def db_fetch_plan():
     conn.close()
     return df
 
+def db_fetch_gps():
+    cols = ["id", "linea", "piquete", "orden", "latitud", "longitud", "dist_km", "tipo", "estructura", "pct_desmonte"]
+    if MODO_NUBE:
+        try:
+            all_rows = []
+            offset = 0
+            while True:
+                r = sb_client.table("piquetes_gps").select("*").order("orden", desc=False).range(offset, offset + 999).execute()
+                if not r.data:
+                    break
+                all_rows.extend(r.data)
+                if len(r.data) < 1000:
+                    break
+                offset += 1000
+            if not all_rows:
+                return pd.DataFrame(columns=cols)
+            df = pd.DataFrame(all_rows)
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = 0.0 if c in ["dist_km", "pct_desmonte"] else ""
+            return df[cols].sort_values(["linea", "orden"]).reset_index(drop=True)
+        except Exception:
+            return pd.DataFrame(columns=cols)
+
+    conn = get_sqlite_conn()
+    df = pd.read_sql_query("SELECT * FROM piquetes_gps ORDER BY linea ASC, orden ASC", conn)
+    conn.close()
+    return df
+
+def db_upsert_gps_batch(records):
+    """Guarda o actualiza piquetes GPS masivamente (Supabase o SQLite)."""
+    if not records:
+        return
+    if MODO_NUBE:
+        try:
+            for i in range(0, len(records), 500):
+                sb_client.table("piquetes_gps").upsert(records[i:i+500], on_conflict="linea,piquete").execute()
+            return
+        except Exception as e:
+            st.error(f"Error guardando coordenadas GPS en Supabase (verificá que creaste la tabla piquetes_gps): {e}")
+            return
+
+    conn = get_sqlite_conn()
+    for r in records:
+        conn.execute("""
+            INSERT INTO piquetes_gps (linea, piquete, orden, latitud, longitud, dist_km, tipo, estructura, pct_desmonte)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(linea, piquete) DO UPDATE SET
+                orden=excluded.orden,
+                latitud=excluded.latitud,
+                longitud=excluded.longitud,
+                dist_km=excluded.dist_km,
+                tipo=excluded.tipo,
+                estructura=excluded.estructura,
+                pct_desmonte=excluded.pct_desmonte
+        """, (
+            r["linea"], r["piquete"], int(r["orden"]), float(r["latitud"]), float(r["longitud"]),
+            float(r.get("dist_km", 0.0)), str(r.get("tipo", "")), str(r.get("estructura", "")), float(r.get("pct_desmonte", 0.0))
+        ))
+    conn.commit()
+    conn.close()
+
+def db_update_pct_desmonte_linea(linea_sigla, mapa_pct_piq):
+    """Actualiza el % de desmonte por piquete para una línea."""
+    df_curr = db_fetch_gps()
+    sub = df_curr[df_curr["linea"] == linea_sigla].copy()
+    if sub.empty:
+        return 0
+    recs = []
+    actualizados = 0
+    for row in sub.itertuples():
+        piq_s = str(row.piquete).strip()
+        pct_val = mapa_pct_piq.get(piq_s, float(row.pct_desmonte or 0.0))
+        if piq_s in mapa_pct_piq:
+            actualizados += 1
+        recs.append({
+            "linea": row.linea,
+            "piquete": piq_s,
+            "orden": int(row.orden),
+            "latitud": float(row.latitud),
+            "longitud": float(row.longitud),
+            "dist_km": float(row.dist_km or 0.0),
+            "tipo": str(row.tipo or ""),
+            "estructura": str(row.estructura or ""),
+            "pct_desmonte": float(pct_val)
+        })
+    db_upsert_gps_batch(recs)
+    return actualizados
+
 @st.cache_data(ttl=60)
 def fetch_datos_reales_supabase():
-    """Lee los avances reales registrados en campo desde 'relevamientos' (Perfilado) y 'mediciones_pat' (PAT)."""
     df_perf = pd.DataFrame()
     df_pat = pd.DataFrame()
     if not MODO_NUBE:
         return df_perf, df_pat
 
-    # 1. Leer Perfilado de Aisladores (relevamientos)
     try:
         rows_perf = []
         offset = 0
@@ -301,7 +425,6 @@ def fetch_datos_reales_supabase():
     except Exception:
         pass
 
-    # 2. Leer Mediciones de Puesta a Tierra (mediciones_pat)
     try:
         rows_pat = []
         offset = 0
@@ -618,12 +741,12 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
 # =============================================================================
 # 5. ENCABEZADO Y SELECTOR DE HORIZONTE TEMPORAL
 # =============================================================================
-estado_cloud_txt = "☁️ Conectado a Supabase (Perfilado + PAT en vivo)" if MODO_NUBE else "⚠️ Modo Local (Configurar Secrets)"
+estado_cloud_txt = "☁️ Conectado a Supabase (Perfilado + PAT + GPS en vivo)" if MODO_NUBE else "⚠️ Modo Local (Configurar Secrets)"
 
 st.markdown(f"""
 <div class="banner-enre">
     <div>
-        <h1 class="banner-title">⚡ TRANSNEA S.A. | Programación LAT e Indicadores ENRE</h1>
+        <h1 class="banner-title">⚡ TRANSNEA S.A. | Programación LAT, Mapa de Red e Indicadores ENRE</h1>
         <div class="banner-sub">Región Centro ({TOTAL_KM_RED} km • {TOTAL_PIQ_RED:,} Piquetes) | Reglamentación AEA 95301 (Franja 22m: 11m + 11m)</div>
     </div>
     <div class="banner-badge">
@@ -676,10 +799,12 @@ with st.container(border=True):
 
 df_semanas_vista = df_semanas_anio[(df_semanas_anio["semana"] >= s_desde) & (df_semanas_anio["semana"] <= s_hasta)].copy()
 df_raw = db_fetch_plan()
+df_gps_all = db_fetch_gps()
 df_perf_real, df_pat_real = fetch_datos_reales_supabase()
 
-tab_indicadores, tab_cronograma, tab_cargar, tab_gestion = st.tabs([
+tab_indicadores, tab_mapa, tab_cronograma, tab_cargar, tab_gestion = st.tabs([
     "📊 Indicadores y Auditoría ENRE",
+    "🗺️ Mapa de Red",
     "🗓️ Cronograma Semanal",
     "➕ Programar Actividad",
     "✏️ Actualizar Avance / Limpiar Datos"
@@ -708,7 +833,6 @@ with tab_indicadores:
             (df_pat_real["semana"] <= s_hasta)
         ].drop_duplicates(subset=["sigla", "piq_id"])
 
-    # Cálculos Cuadrilla 1 (Desmonte)
     df_desm = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 1 - Desmonte y Limpieza"] if not df_horizonte.empty else pd.DataFrame()
     km_desm_prog = df_desm["prog_km"].sum() if not df_desm.empty else 0.0
     km_desm_ejec = df_desm["ejec_km"].sum() if not df_desm.empty else 0.0
@@ -716,17 +840,14 @@ with tab_indicadores:
     pct_cumpl_desm = (km_desm_ejec / km_desm_prog * 100) if km_desm_prog > 0 else 0.0
     pct_red_limpia = (km_desm_ejec / TOTAL_KM_RED * 100) if TOTAL_KM_RED > 0 else 0.0
 
-    # Cálculos Cuadrilla 2 (Datos reales de Supabase 'relevamientos' + cambios aisladores del plan)
     piq_perf_real_total = len(perf_ventana)
     df_c2 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 2 - Alturas y TCT"] if not df_horizonte.empty else pd.DataFrame()
     piq_aisl_camb = df_c2[df_c2["tarea"] == "Cambio de Aisladores (Correctivo)"]["ejec_piq"].sum() if not df_c2.empty else 0
 
-    # Cálculos Cuadrilla 3 (Datos reales de Supabase 'mediciones_pat' + reparaciones del plan)
     piq_pat_real_total = len(pat_ventana)
     df_c3 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 3 - Puesta a Tierra (PAT)"] if not df_horizonte.empty else pd.DataFrame()
     piq_pat_rep = df_c3[df_c3["tarea"] == "Reparación de PAT"]["ejec_piq"].sum() if not df_c3.empty else 0
 
-    # Cálculos Cuadrilla 4 (Recorridos)
     df_c4 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 4 - Recorrido e Inspección"] if not df_horizonte.empty else pd.DataFrame()
     km_rec_dron = df_c4[df_c4["tarea"] == "Recorrido con Dron"]["ejec_km"].sum() if not df_c4.empty else 0.0
     km_rec_vis = df_c4[df_c4["tarea"].str.contains("Visual")]["ejec_km"].sum() if not df_c4.empty else 0.0
@@ -902,7 +1023,389 @@ with tab_indicadores:
             st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
 
 # =============================================================================
-# PESTAÑA 2: CRONOGRAMA SEMANAL (PLANIFICADO + EJECUCIÓN REAL DE CAMPO)
+# PESTAÑA 2: MAPA DE RED (REGIÓN OPERATIVA CENTRO - TRAZA MAGENTA + GPS)
+# =============================================================================
+with tab_mapa:
+    st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
+    st.caption("Trazado oficial en magenta de las 9 líneas LAT de Región Centro (Chaco, Corrientes y Formosa), con cálculo de distancias GPS, superficie en m² y hectáreas de desmonte.")
+
+    # Controles superiores del mapa
+    cm1, cm2, cm3, cm4 = st.columns([2, 1.5, 1.5, 2])
+    with cm1:
+        mapa_linea_sel = st.selectbox(
+            "⚡ Seleccionar Línea LAT:",
+            options=["TODAS (REGIÓN CENTRO MAGENTA)"] + LINEAS_SIGLAS,
+            key="map_linea_sel"
+        )
+    with cm2:
+        ancho_serv_sel = st.selectbox(
+            "📏 Ancho Franja Servidumbre:",
+            options=[22.0, 25.0],
+            format_func=lambda w: f"{w:.0f} m (AEA 95301: 11+11m)" if w == 22.0 else f"{w:.0f} m (Salvoconducto: 12.5+12.5m)",
+            key="map_ancho_serv"
+        )
+    with cm3:
+        capa_operativa = st.selectbox(
+            "🎨 Capa Operativa sobre Piquetes:",
+            options=["Traza Oficial Magenta", "Avance Desmonte (%)", "Perfilado Real (Campo)", "PAT Medida Real (Campo)"],
+            key="map_capa_op"
+        )
+    with cm4:
+        estilo_mapa = st.selectbox(
+            "🌍 Fondo Cartográfico:",
+            options=["open-street-map", "carto-darkmatter", "carto-positron"],
+            format_func=lambda s: {"open-street-map": "Rutas y Localidades (OSM)", "carto-darkmatter": "Oscuro Técnico", "carto-positron": "Claro Catastral"}[s],
+            key="map_estilo_fondo"
+        )
+
+    if df_gps_all.empty:
+        st.warning("⚠️ Aún no hay coordenadas GPS cargadas en la base de datos. Subí tu archivo **`Base de datos piquetes.xlsm`** (o `piquetes_region_centro_gps.csv`) en el importador de abajo para cargar los 1.830 piquetes de la Región Centro.")
+    else:
+        df_map = df_gps_all.copy() if mapa_linea_sel.startswith("TODAS") else df_gps_all[df_gps_all["linea"] == mapa_linea_sel].copy()
+
+        # Recalcular distancias exactas entre piquetes consecutivos de cada línea
+        dist_m_list = []
+        for sig, grp in df_map.groupby("linea", sort=False):
+            lats = grp["latitud"].tolist()
+            lons = grp["longitud"].tolist()
+            for i in range(len(grp)):
+                if i < len(grp) - 1:
+                    d_m = distancia_geodesica_m(lats[i], lons[i], lats[i+1], lons[i+1])
+                else:
+                    d_m = float(grp.iloc[i]["dist_km"] or 0.0) * 1000.0
+                dist_m_list.append(d_m)
+
+        df_map["dist_m"] = dist_m_list
+        df_map["area_m2"] = df_map["dist_m"] * ancho_serv_sel
+        df_map["hectareas"] = df_map["area_m2"] / 10000.0
+        df_map["ha_limpias"] = df_map["hectareas"] * (df_map["pct_desmonte"].fillna(0.0) / 100.0)
+
+        # Cruzar con datos reales de Perfilado y PAT
+        set_perf = set(zip(perf_ventana["sigla"], perf_ventana["piq_id"])) if not perf_ventana.empty else set()
+        set_pat = set(zip(pat_ventana["sigla"], pat_ventana["piq_id"])) if not pat_ventana.empty else set()
+
+        df_map["tiene_perf"] = [((r.linea, str(r.piquete).strip()) in set_perf) for r in df_map.itertuples()]
+        df_map["tiene_pat"] = [((r.linea, str(r.piquete).strip()) in set_pat) for r in df_map.itertuples()]
+
+        # KPIs geométricos de la vista en el mapa
+        km_vista = df_map["dist_m"].sum() / 1000.0
+        m2_vista = df_map["area_m2"].sum()
+        ha_vista = df_map["hectareas"].sum()
+        ha_limpias_vista = df_map["ha_limpias"].sum()
+        pct_limpio_vista = (ha_limpias_vista / ha_vista * 100) if ha_vista > 0 else 0.0
+
+        mk1, mk2, mk3, mk4, mk5 = st.columns(5)
+        mk1.metric("Piquetes Georreferenciados", f"{len(df_map):,}")
+        mk2.metric("Longitud GPS Calculada", f"{km_vista:.2f} km")
+        mk3.metric(f"Superficie Electroducto ({ancho_serv_sel:.0f}m)", f"{m2_vista:,.0f} m²", f"{ha_vista:.2f} ha totales")
+        mk4.metric("Superficie Limpia (Desmonte)", f"{ha_limpias_vista:.2f} ha", f"{pct_limpio_vista:.1f}% limpio")
+        mk5.metric("Piquetes Campo (Perf / PAT)", f"{int(df_map['tiene_perf'].sum())} / {int(df_map['tiene_pat'].sum())}")
+
+        # Construcción del Mapa Interactivo (Traza Magenta Región Centro)
+        fig_map = go.Figure()
+
+        for sig, grp in df_map.groupby("linea", sort=False):
+            grp_ord = grp.sort_values("orden")
+            hover_txts = [
+                f"<b>LAT {r.linea} — Piquete {r.piquete}</b><br>"
+                f"Tipo: {r.tipo} | Estructura: {r.estructura}<br>"
+                f"GPS: {r.latitud:.6f}, {r.longitud:.6f}<br>"
+                f"Vano siguiente: {r.dist_m:.1f} m ({r.hectareas:.3f} ha)<br>"
+                f"Desmonte vano: {r.pct_desmonte:.0f}% ({r.ha_limpias:.3f} ha limpias)<br>"
+                f"Perfilado: {'✅ Sí' if r.tiene_perf else '⏳ Pendiente'} | PAT: {'✅ Sí' if r.tiene_pat else '⏳ Pendiente'}"
+                for r in grp_ord.itertuples()
+            ]
+
+            # Línea de traza en color Magenta oficial de Región Centro
+            fig_map.add_trace(go.Scattermapbox(
+                lat=grp_ord["latitud"],
+                lon=grp_ord["longitud"],
+                mode="lines",
+                line=dict(width=3.5, color="#D946EF"),
+                name=f"LAT {sig}",
+                hoverinfo="skip"
+            ))
+
+            # Color de marcadores según la capa seleccionada
+            if capa_operativa == "Avance Desmonte (%)":
+                colores_pts = ["#10B981" if p >= 80 else ("#F59E0B" if p > 0 else "#D946EF") for p in grp_ord["pct_desmonte"]]
+            elif capa_operativa == "Perfilado Real (Campo)":
+                colores_pts = ["#3B82F6" if ok else "#D946EF" for ok in grp_ord["tiene_perf"]]
+            elif capa_operativa == "PAT Medida Real (Campo)":
+                colores_pts = ["#F59E0B" if ok else "#D946EF" for ok in grp_ord["tiene_pat"]]
+            else:
+                colores_pts = "#C026D3"
+
+            fig_map.add_trace(go.Scattermapbox(
+                lat=grp_ord["latitud"],
+                lon=grp_ord["longitud"],
+                mode="markers",
+                marker=dict(size=7 if not mapa_linea_sel.startswith("TODAS") else 5.5, color=colores_pts),
+                name=f"Piquetes {sig}",
+                text=hover_txts,
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False
+            ))
+
+        centro_lat = float(df_map["latitud"].mean())
+        centro_lon = float(df_map["longitud"].mean())
+        zoom_val = 7.2 if mapa_linea_sel.startswith("TODAS") else 9.5
+
+        fig_map.update_layout(
+            mapbox=dict(
+                style=estilo_mapa,
+                center=dict(lat=centro_lat, lon=centro_lon),
+                zoom=zoom_val
+            ),
+            height=540,
+            margin=dict(l=0, r=0, t=10, b=0),
+            legend=dict(
+                orientation="h", yanchor="top", y=0.99, xanchor="left", x=0.01,
+                bgcolor="rgba(15, 23, 42, 0.85)", font=dict(color="#FFFFFF", size=11)
+            )
+        )
+        st.plotly_chart(fig_map, use_container_width=True, key="mapa_red_region_centro")
+
+    st.divider()
+
+    # =========================================================================
+    # SECCIÓN DE GESTIÓN GPS: 1) DECLARAR PIQUETE | 2) IMPORTAR EXCEL | 3) CALCULAR TRAMO
+    # =========================================================================
+    subtab_decl, subtab_imp, subtab_calc = st.tabs([
+        "📍 Declarar / Editar Coordenadas GPS",
+        "📥 Importar Base Piquetes / Planilla Desmonte (.xlsm / .xlsx)",
+        "📐 Calculadora de Desmonte por Tramo (m² y Hectáreas)"
+    ])
+
+    # 1. DECLARAR O EDITAR COORDENADAS MANUALMENTE
+    with subtab_decl:
+        st.markdown("##### 📍 Declarar Coordenadas GPS de Piquete (Latitud y Longitud)")
+        with st.container(border=True):
+            dc1, dc2, dc3, dc4 = st.columns([1.8, 1.2, 1.2, 1.5])
+            with dc1:
+                d_linea = st.selectbox("Línea LAT (Región Centro)", LINEAS_SIGLAS, key="decl_linea")
+            with dc2:
+                d_piq = st.text_input("Piquete N°", placeholder="Ej: 1 o 3A", key="decl_piq")
+            with dc3:
+                d_orden = st.number_input("Orden Secuencial", min_value=1, max_value=1000, value=1, step=1, key="decl_orden")
+            with dc4:
+                d_tipo = st.selectbox("Tipo Estructura", ["SS", "RT", "SD"], key="decl_tipo")
+
+            dc5, dc6, dc7, dc8 = st.columns([1.5, 1.5, 1.5, 1.5])
+            with dc5:
+                d_lat = st.number_input("Latitud GPS (Sur)", min_value=-35.0, max_value=-20.0, value=-27.450000, format="%.6f", step=0.0001, key="decl_lat")
+            with dc6:
+                d_lon = st.number_input("Longitud GPS (Oeste)", min_value=-65.0, max_value=-54.0, value=-58.980000, format="%.6f", step=0.0001, key="decl_lon")
+            with dc7:
+                d_est = st.selectbox("Material Poste", ["Hormigón", "Metálica", "Madera"], key="decl_est")
+            with dc8:
+                d_pct = st.number_input("% Desmonte Vano", min_value=0.0, max_value=100.0, value=0.0, step=5.0, key="decl_pct")
+
+            # Calcular distancia automática contra el piquete anterior en esa línea si existe
+            dist_calc_km = 0.0
+            if not df_gps_all.empty:
+                sub_prev = df_gps_all[(df_gps_all["linea"] == d_linea) & (df_gps_all["orden"] == int(d_orden) - 1)]
+                if not sub_prev.empty:
+                    lat_p = float(sub_prev.iloc[0]["latitud"])
+                    lon_p = float(sub_prev.iloc[0]["longitud"])
+                    d_m_prev = distancia_geodesica_m(lat_p, lon_p, d_lat, d_lon)
+                    dist_calc_km = d_m_prev / 1000.0
+                    area_p = d_m_prev * ancho_serv_sel
+                    st.info(f"📏 Distancia geodésica desde el piquete anterior (Orden {int(d_orden)-1}): **{d_m_prev:.2f} m** | Superficie: **{area_p:,.1f} m²** (**{area_p/10000.0:.4f} ha**).")
+
+            if st.button("💾 Guardar Coordenada GPS del Piquete", type="primary", use_container_width=True, key="btn_save_gps_single"):
+                if not d_piq.strip():
+                    st.error("Ingresá el número o identificador del piquete.")
+                else:
+                    lat_ok, lon_ok = corregir_par_lat_lon(d_lat, d_lon)
+                    db_upsert_gps_batch([{
+                        "linea": d_linea,
+                        "piquete": d_piq.strip(),
+                        "orden": int(d_orden),
+                        "latitud": round(lat_ok, 6),
+                        "longitud": round(lon_ok, 6),
+                        "dist_km": round(dist_calc_km, 5),
+                        "tipo": d_tipo,
+                        "estructura": d_est,
+                        "pct_desmonte": float(d_pct)
+                    }])
+                    st.success(f"✅ Coordenada del Piquete {d_piq} ({d_linea}) guardada correctamente.")
+                    st.rerun()
+
+    # 2. IMPORTADOR MASIVO DE EXCEL (BASE DE DATOS PIQUETES + DESMONTE LAT)
+    with subtab_imp:
+        col_i1, col_i2 = st.columns(2)
+
+        with col_i1:
+            st.markdown("##### 📂 1. Importar Coordenadas (`Base de datos piquetes.xlsm` o `.csv`)")
+            st.caption("Importa automáticamente los 1.830 piquetes de las 9 líneas de la Región Centro con sus coordenadas GPS y distancias entre piquetes.")
+            file_bd_gps = st.file_uploader("Subir Base de datos piquetes (.xlsm / .xlsx / .csv)", type=["xlsm", "xlsx", "csv"], key="upl_bd_piquetes")
+
+            if file_bd_gps is not None:
+                try:
+                    if file_bd_gps.name.lower().endswith(".csv"):
+                        df_in = pd.read_csv(file_bd_gps)
+                    else:
+                        df_raw_xl = pd.read_excel(file_bd_gps, sheet_name="Base de datos", header=1)
+                        df_raw_xl["linea_norm"] = df_raw_xl["LAT"].apply(normalizar_sigla_lat)
+                        df_sub_rc = df_raw_xl[df_raw_xl["linea_norm"].isin(LINEAS_SIGLAS)].copy()
+                        df_in = pd.DataFrame({
+                            "linea": df_sub_rc["linea_norm"],
+                            "piquete": df_sub_rc["PIQ N°"].astype(str).str.strip(),
+                            "latitud": pd.to_numeric(df_sub_rc["LAT.1"], errors="coerce"),
+                            "longitud": pd.to_numeric(df_sub_rc["LONG"], errors="coerce"),
+                            "dist_km": pd.to_numeric(df_sub_rc["Entre piq."], errors="coerce").fillna(0.0),
+                            "tipo": df_sub_rc["TIPO"].fillna("").astype(str).str.strip(),
+                            "estructura": df_sub_rc["ESTRUCTURA"].fillna("").astype(str).str.strip(),
+                        }).dropna(subset=["latitud", "longitud"])
+                        df_in["orden"] = df_in.groupby("linea").cumcount() + 1
+
+                    st.success(f"✅ Detectados **{len(df_in):,} piquetes** válidos de la Región Centro.")
+                    if st.button("🚀 Cargar Coordenadas al Mapa de Red", type="primary", use_container_width=True, key="btn_imp_gps_bd"):
+                        recs_imp = []
+                        for r in df_in.itertuples():
+                            lat_c, lon_c = corregir_par_lat_lon(r.latitud, r.longitud)
+                            recs_imp.append({
+                                "linea": r.linea,
+                                "piquete": str(r.piquete).strip(),
+                                "orden": int(r.orden),
+                                "latitud": round(lat_c, 6),
+                                "longitud": round(lon_c, 6),
+                                "dist_km": round(float(r.dist_km), 5),
+                                "tipo": str(r.tipo),
+                                "estructura": str(r.estructura),
+                                "pct_desmonte": 0.0
+                            })
+                        with st.spinner("Guardando 1.830 coordenadas GPS..."):
+                            db_upsert_gps_batch(recs_imp)
+                        st.toast("¡Base GPS de Región Centro cargada con éxito!", icon="🗺️")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error leyendo archivo de coordenadas: {e}")
+
+        with col_i2:
+            st.markdown("##### 🌲 2. Importar Planilla de Desmonte (`DESMONTE LAT *.xlsx`)")
+            st.caption("Lee los porcentajes por piquete de 'Porcentaje Piquetes', calcula distancias desde GPS, superficie en m² y hectáreas limpias.")
+            linea_desm_xl = st.selectbox("Línea LAT correspondiente a la planilla:", LINEAS_SIGLAS, key="imp_desm_linea")
+            file_desm_xl = st.file_uploader("Subir Excel de Desmonte (.xlsx)", type=["xlsx", "xlsm"], key="upl_desmonte_xl")
+
+            if file_desm_xl is not None:
+                try:
+                    df_pct_xl = pd.read_excel(file_desm_xl, sheet_name="Porcentaje Piquetes", header=1)
+                    col_p = df_pct_xl.columns[0]
+                    col_v = df_pct_xl.columns[1]
+                    df_pct_xl = df_pct_xl.dropna(subset=[col_p]).copy()
+
+                    mapa_pct = {}
+                    for r in df_pct_xl.itertuples():
+                        try:
+                            p_str = str(int(float(r[1])))
+                        except Exception:
+                            p_str = str(r[1]).strip()
+                        val_raw = float(r[2]) if pd.notnull(r[2]) else 0.0
+                        # Si está en escala 0..1 (ej: 0.3 = 30%), pasarlo a 0..100
+                        pct_100 = val_raw * 100.0 if val_raw <= 1.0 else val_raw
+                        mapa_pct[p_str] = round(pct_100, 2)
+
+                    # Calcular resumen inmediato usando las coordenadas GPS de esa línea
+                    sub_gps_l = df_gps_all[df_gps_all["linea"] == linea_desm_xl].sort_values("orden").copy() if not df_gps_all.empty else pd.DataFrame()
+                    if sub_gps_l.empty:
+                        st.warning(f"Primero cargá las coordenadas GPS de **{linea_desm_xl}** en el panel izquierdo.")
+                    else:
+                        lats = sub_gps_l["latitud"].tolist()
+                        lons = sub_gps_l["longitud"].tolist()
+                        piqs = sub_gps_l["piquete"].tolist()
+                        tot_m = 0.0
+                        limpio_m = 0.0
+                        for i in range(len(sub_gps_l) - 1):
+                            dm = distancia_geodesica_m(lats[i], lons[i], lats[i+1], lons[i+1])
+                            pct_i = mapa_pct.get(str(piqs[i]).strip(), 0.0) / 100.0
+                            tot_m += dm
+                            limpio_m += dm * pct_i
+
+                        area_tot_m2 = tot_m * ancho_serv_sel
+                        area_limpia_m2 = limpio_m * ancho_serv_sel
+                        ha_limpia = area_limpia_m2 / 10000.0
+                        pct_avance_tot = (limpio_m / tot_m * 100) if tot_m > 0 else 0.0
+
+                        st.info(
+                            f"**Resultado Cálculo GPS ({linea_desm_xl} — Franja {ancho_serv_sel:.0f}m):**\n"
+                            f"- Distancia limpia: **{limpio_m/1000.0:.2f} km** de {tot_m/1000.0:.2f} km (**{pct_avance_tot:.1f}%**)\n"
+                            f"- Superficie limpia: **{area_limpia_m2:,.0f} m²** (**{ha_limpia:.2f} ha**)"
+                        )
+
+                        if st.button("💾 Aplicar Avance al Mapa y Actualizar Plan ENRE", type="primary", use_container_width=True, key="btn_apply_desm_xl"):
+                            db_update_pct_desmonte_linea(linea_desm_xl, mapa_pct)
+                            # Registrar o actualizar en plan_mantenimiento_enre
+                            db_insert_registro({
+                                "anio": int(anio_sel),
+                                "linea": linea_desm_xl,
+                                "cuadrilla": "Cuadrilla 1 - Desmonte y Limpieza",
+                                "tarea": "Limpieza de Electroducto / Desmonte (Franja 22m)",
+                                "tramo_desc": f"Relevamiento GPS ({pct_avance_tot:.1f}% traza)",
+                                "semana_inicio": int(s_desde),
+                                "semana_fin": int(s_hasta),
+                                "prog_km": round(tot_m / 1000.0, 2),
+                                "ejec_km": round(limpio_m / 1000.0, 2),
+                                "prog_piq": len(sub_gps_l),
+                                "ejec_piq": sum(1 for v in mapa_pct.values() if v > 0),
+                                "ot": "GPS-DESM",
+                                "estado": "En Ejecución" if pct_avance_tot < 99.9 else "Ejecutado",
+                                "observaciones": f"Calculado por GPS ({ancho_serv_sel:.0f}m): {ha_limpia:.2f} ha limpias."
+                            })
+                            st.toast(f"¡Desmonte de {linea_desm_xl} actualizado en Mapa e Indicadores!", icon="🌲")
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Error procesando planilla de desmonte: {e}")
+
+    # 3. CALCULADORA GEOMÉTRICA POR TRAMO DE PIQUETES
+    with subtab_calc:
+        st.markdown("##### 📐 Calculadora de Distancia, Superficie (m²) y Hectáreas entre Piquetes")
+        if df_gps_all.empty:
+            st.info("Cargá primero las coordenadas GPS en la pestaña anterior para usar la calculadora.")
+        else:
+            cc1, cc2, cc3, cc4 = st.columns([2, 1.3, 1.3, 1.4])
+            with cc1:
+                calc_linea = st.selectbox("Línea LAT:", LINEAS_SIGLAS, key="calc_tramo_linea")
+            sub_c = df_gps_all[df_gps_all["linea"] == calc_linea].sort_values("orden").reset_index(drop=True)
+            lista_piqs_c = sub_c["piquete"].tolist()
+
+            with cc2:
+                piq_ini_c = st.selectbox("Piquete Inicio:", lista_piqs_c, index=0, key="calc_piq_ini")
+            with cc3:
+                piq_fin_c = st.selectbox("Piquete Fin:", lista_piqs_c, index=len(lista_piqs_c) - 1, key="calc_piq_fin")
+            with cc4:
+                pct_tramo_c = st.number_input("% Limpieza Tramo:", min_value=0.0, max_value=100.0, value=100.0, step=5.0, key="calc_pct_tramo")
+
+            idx1 = lista_piqs_c.index(piq_ini_c)
+            idx2 = lista_piqs_c.index(piq_fin_c)
+            if idx1 > idx2:
+                idx1, idx2 = idx2, idx1
+
+            tramo_df = sub_c.iloc[idx1:idx2+1].reset_index(drop=True)
+            dist_tramo_m = 0.0
+            for i in range(len(tramo_df) - 1):
+                dist_tramo_m += distancia_geodesica_m(
+                    tramo_df.loc[i, "latitud"], tramo_df.loc[i, "longitud"],
+                    tramo_df.loc[i+1, "latitud"], tramo_df.loc[i+1, "longitud"]
+                )
+
+            dist_ejec_m = dist_tramo_m * (pct_tramo_c / 100.0)
+            sup_total_m2 = dist_tramo_m * ancho_serv_sel
+            sup_ejec_m2 = dist_ejec_m * ancho_serv_sel
+            ha_total_tramo = sup_total_m2 / 10000.0
+            ha_ejec_tramo = sup_ejec_m2 / 10000.0
+            km_linea_cat = CATALOGO_LAT[calc_linea]["km"]
+            pct_sobre_linea = ((dist_ejec_m / 1000.0) / km_linea_cat * 100) if km_linea_cat > 0 else 0.0
+
+            rk1, rk2, rk3, rk4 = st.columns(4)
+            rk1.metric("Distancia Tramo", f"{dist_tramo_m:,.1f} m", f"{dist_tramo_m/1000.0:.2f} km")
+            rk2.metric(f"Superficie ({ancho_serv_sel:.0f}m)", f"{sup_ejec_m2:,.0f} m²", f"de {sup_total_m2:,.0f} m²")
+            rk3.metric("Hectáreas Limpias", f"{ha_ejec_tramo:.2f} ha", f"de {ha_total_tramo:.2f} ha")
+            rk4.metric("% Avance s/ Línea Total", f"{pct_sobre_linea:.2f}%", f"sobre {km_linea_cat} km")
+
+# =============================================================================
+# PESTAÑA 3: CRONOGRAMA SEMANAL (PLANIFICADO + EJECUCIÓN REAL DE CAMPO)
 # =============================================================================
 with tab_cronograma:
     incluir_reales_gantt = st.checkbox("🔗 Mostrar también ejecución real registrada en Perfilado y PAT en el cronograma", value=True, key="chk_reales_gantt")
@@ -1005,7 +1508,7 @@ with tab_cronograma:
         st.plotly_chart(fig_gantt, use_container_width=True, key="gantt_semanal_main")
 
 # =============================================================================
-# PESTAÑA 3: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
+# PESTAÑA 4: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
 # =============================================================================
 with tab_cargar:
     st.markdown("### ➕ Cargar Programación Real de Mantenimiento")
@@ -1068,7 +1571,7 @@ with tab_cargar:
             st.rerun()
 
 # =============================================================================
-# PESTAÑA 4: ACTUALIZAR AVANCE Y LIMPIAR DATOS FICTICIOS
+# PESTAÑA 5: ACTUALIZAR AVANCE Y LIMPIAR DATOS
 # =============================================================================
 with tab_gestion:
     st.markdown("### ✏️ Actualizar Avances Reales y Reprogramaciones")
