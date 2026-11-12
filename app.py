@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import date, datetime, timedelta
 import math
+import re
 import sqlite3
 import io
 import openpyxl
@@ -127,6 +128,14 @@ MESES_ES = {
     1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
     7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"
 }
+
+def natural_piq_key(piq_str):
+    """Ordena piquetes numéricamente manteniendo intercalados en su lugar (ej: 111 -> 111b -> 112)."""
+    s = str(piq_str).strip()
+    m = re.match(r"^(\d+)(.*)$", s)
+    if m:
+        return (int(m.group(1)), m.group(2).strip().lower())
+    return (999999, s.lower())
 
 def normalizar_sigla_lat(nombre):
     if not nombre:
@@ -310,6 +319,7 @@ def db_fetch_plan():
 
 def db_fetch_gps():
     cols = ["id", "linea", "piquete", "orden", "latitud", "longitud", "dist_km", "tipo", "estructura", "pct_desmonte"]
+    df = pd.DataFrame(columns=cols)
     if MODO_NUBE:
         try:
             all_rows = []
@@ -322,19 +332,24 @@ def db_fetch_gps():
                 if len(r.data) < 1000:
                     break
                 offset += 1000
-            if not all_rows:
-                return pd.DataFrame(columns=cols)
-            df = pd.DataFrame(all_rows)
-            for c in cols:
-                if c not in df.columns:
-                    df[c] = 0.0 if c in ["dist_km", "pct_desmonte"] else ""
-            return df[cols].sort_values(["linea", "orden"]).reset_index(drop=True)
+            if all_rows:
+                df = pd.DataFrame(all_rows)
+                for c in cols:
+                    if c not in df.columns:
+                        df[c] = 0.0 if c in ["dist_km", "pct_desmonte"] else ""
+                df = df[cols]
         except Exception:
             return pd.DataFrame(columns=cols)
+    else:
+        conn = get_sqlite_conn()
+        df = pd.read_sql_query("SELECT * FROM piquetes_gps", conn)
+        conn.close()
 
-    conn = get_sqlite_conn()
-    df = pd.read_sql_query("SELECT * FROM piquetes_gps ORDER BY linea ASC, orden ASC", conn)
-    conn.close()
+    if not df.empty:
+        # Aplicar orden natural por número de piquete para ubicar 3A, 44A, 111b en su posición física real
+        df["_nat_key"] = df["piquete"].apply(natural_piq_key)
+        df = df.sort_values(["linea", "_nat_key"]).drop(columns=["_nat_key"]).reset_index(drop=True)
+        df["orden"] = df.groupby("linea").cumcount() + 1
     return df
 
 def db_upsert_gps_batch(records):
@@ -1027,7 +1042,7 @@ with tab_indicadores:
 # =============================================================================
 with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
-    st.caption("Visualización diferenciada por color de las 9 líneas LAT de Región Centro (Chaco, Corrientes y Formosa), con cálculo de distancias GPS, superficie en m² y hectáreas de desmonte.")
+    st.caption("Visualización diferenciada por color de las 9 líneas LAT de Región Centro (Chaco, Corrientes y Formosa), con ordenamiento natural de piquetes intercalados y cálculo de superficie.")
 
     cm1, cm2, cm3, cm4 = st.columns([2, 1.5, 1.5, 2])
     with cm1:
@@ -1061,7 +1076,8 @@ with tab_mapa:
         st.warning("⚠️ Aún no hay coordenadas GPS cargadas en la base de datos. Subí tu archivo **`Base de datos piquetes.xlsm`** (o `piquetes_region_centro_gps.csv`) en el importador de abajo para cargar los 1.830 piquetes de la Región Centro.")
     else:
         df_map = df_gps_all.copy() if mapa_linea_sel.startswith("TODAS") else df_gps_all[df_gps_all["linea"] == mapa_linea_sel].copy()
-        df_map = df_map.sort_values(["linea", "orden"]).reset_index(drop=True)
+        df_map["_nat"] = df_map["piquete"].apply(natural_piq_key)
+        df_map = df_map.sort_values(["linea", "_nat"]).drop(columns=["_nat"]).reset_index(drop=True)
 
         dist_m_list = []
         for sig, grp in df_map.groupby("linea", sort=False):
@@ -1102,7 +1118,6 @@ with tab_mapa:
         fig_map = go.Figure()
 
         for sig, grp in df_map.groupby("linea", sort=False):
-            grp_ord = grp.sort_values("orden")
             color_linea = CATALOGO_LAT.get(sig, {}).get("color", "#D946EF")
 
             hover_txts = [
@@ -1112,32 +1127,30 @@ with tab_mapa:
                 f"Vano siguiente: {r.dist_m:.1f} m ({r.hectareas:.3f} ha)<br>"
                 f"Desmonte vano: {r.pct_desmonte:.0f}% ({r.ha_limpias:.3f} ha limpias)<br>"
                 f"Perfilado: {'✅ Sí' if r.tiene_perf else '⏳ Pendiente'} | PAT: {'✅ Sí' if r.tiene_pat else '⏳ Pendiente'}"
-                for r in grp_ord.itertuples()
+                for r in grp.itertuples()
             ]
 
-            # Traza de línea con su color distintivo
             fig_map.add_trace(go.Scattermap(
-                lat=grp_ord["latitud"],
-                lon=grp_ord["longitud"],
+                lat=grp["latitud"],
+                lon=grp["longitud"],
                 mode="lines",
                 line=dict(width=4, color=color_linea),
                 name=f"LAT {sig}",
                 hoverinfo="skip"
             ))
 
-            # Color de marcadores según la capa seleccionada
             if capa_operativa == "Avance Desmonte (%)":
-                colores_pts = ["#10B981" if p >= 80 else ("#F59E0B" if p > 0 else color_linea) for p in grp_ord["pct_desmonte"]]
+                colores_pts = ["#10B981" if p >= 80 else ("#F59E0B" if p > 0 else color_linea) for p in grp["pct_desmonte"]]
             elif capa_operativa == "Perfilado Real (Campo)":
-                colores_pts = ["#3B82F6" if ok else color_linea for ok in grp_ord["tiene_perf"]]
+                colores_pts = ["#3B82F6" if ok else color_linea for ok in grp["tiene_perf"]]
             elif capa_operativa == "PAT Medida Real (Campo)":
-                colores_pts = ["#F59E0B" if ok else color_linea for ok in grp_ord["tiene_pat"]]
+                colores_pts = ["#F59E0B" if ok else color_linea for ok in grp["tiene_pat"]]
             else:
                 colores_pts = color_linea
 
             fig_map.add_trace(go.Scattermap(
-                lat=grp_ord["latitud"],
-                lon=grp_ord["longitud"],
+                lat=grp["latitud"],
+                lon=grp["longitud"],
                 mode="markers",
                 marker=dict(size=7.5 if not mapa_linea_sel.startswith("TODAS") else 6, color=colores_pts),
                 name=f"Piquetes {sig}",
@@ -1183,7 +1196,7 @@ with tab_mapa:
             with dc1:
                 d_linea = st.selectbox("Línea LAT (Región Centro)", LINEAS_SIGLAS, key="decl_linea")
             with dc2:
-                d_piq = st.text_input("Piquete N°", placeholder="Ej: 1 o 3A", key="decl_piq")
+                d_piq = st.text_input("Piquete N°", placeholder="Ej: 1 o 111b", key="decl_piq")
             with dc3:
                 d_orden = st.number_input("Orden Secuencial", min_value=1, max_value=1000, value=1, step=1, key="decl_orden")
             with dc4:
@@ -1234,7 +1247,7 @@ with tab_mapa:
 
         with col_i1:
             st.markdown("##### 📂 1. Importar Coordenadas (`Base de datos piquetes.xlsm` o `.csv`)")
-            st.caption("Importa automáticamente los 1.830 piquetes de las 9 líneas de la Región Centro con sus coordenadas GPS y distancias entre piquetes.")
+            st.caption("Importa automáticamente los 1.830 piquetes de las 9 líneas de la Región Centro con sus coordenadas GPS y ordenamiento natural.")
             file_bd_gps = st.file_uploader("Subir Base de datos piquetes (.xlsm / .xlsx / .csv)", type=["xlsm", "xlsx", "csv"], key="upl_bd_piquetes")
 
             if file_bd_gps is not None:
@@ -1254,7 +1267,10 @@ with tab_mapa:
                             "tipo": df_sub_rc["TIPO"].fillna("").astype(str).str.strip(),
                             "estructura": df_sub_rc["ESTRUCTURA"].fillna("").astype(str).str.strip(),
                         }).dropna(subset=["latitud", "longitud"])
-                        df_in["orden"] = df_in.groupby("linea").cumcount() + 1
+
+                    df_in["_nat"] = df_in["piquete"].apply(natural_piq_key)
+                    df_in = df_in.sort_values(["linea", "_nat"]).drop(columns=["_nat"]).reset_index(drop=True)
+                    df_in["orden"] = df_in.groupby("linea").cumcount() + 1
 
                     st.success(f"✅ Detectados **{len(df_in):,} piquetes** válidos de la Región Centro.")
                     if st.button("🚀 Cargar Coordenadas al Mapa de Red", type="primary", use_container_width=True, key="btn_imp_gps_bd"):
@@ -1301,7 +1317,7 @@ with tab_mapa:
                         pct_100 = val_raw * 100.0 if val_raw <= 1.0 else val_raw
                         mapa_pct[p_str] = round(pct_100, 2)
 
-                    sub_gps_l = df_gps_all[df_gps_all["linea"] == linea_desm_xl].sort_values("orden").copy() if not df_gps_all.empty else pd.DataFrame()
+                    sub_gps_l = df_gps_all[df_gps_all["linea"] == linea_desm_xl].copy() if not df_gps_all.empty else pd.DataFrame()
                     if sub_gps_l.empty:
                         st.warning(f"Primero cargá las coordenadas GPS de **{linea_desm_xl}** en el panel izquierdo.")
                     else:
@@ -1357,7 +1373,7 @@ with tab_mapa:
             cc1, cc2, cc3, cc4 = st.columns([2, 1.3, 1.3, 1.4])
             with cc1:
                 calc_linea = st.selectbox("Línea LAT:", LINEAS_SIGLAS, key="calc_tramo_linea")
-            sub_c = df_gps_all[df_gps_all["linea"] == calc_linea].sort_values("orden").reset_index(drop=True)
+            sub_c = df_gps_all[df_gps_all["linea"] == calc_linea].reset_index(drop=True)
             lista_piqs_c = sub_c["piquete"].tolist()
 
             with cc2:
