@@ -1,0 +1,29 @@
+name: Monitoreo Satelital Sentinel-2 (Region Centro)
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Todos los lunes a las 06:00 AM (hora Argentina)
+  workflow_dispatch:       # Permite ejecutarlo manualmente desde la pestaña Actions
+
+jobs:
+  actualizar-vegetacion-ndvi:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar librerías geoespaciales y Supabase
+        run: |
+          pip install --upgrade pip
+          pip install pystac-client rasterio shapely pyproj supabase pandas numpy
+
+      - name: Ejecutar análisis Sentinel-2 sobre piquetes GPS
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python monitoreo_ndvi.py
