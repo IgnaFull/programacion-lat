@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from datetime import date, datetime, timedelta
 import sqlite3
 import io
@@ -18,7 +17,7 @@ try:
 except ImportError:
     REPORTLAB_AVAILABLE = False
 
-# Cliente Supabase opcional
+# Cliente Supabase
 try:
     from supabase import create_client
     SUPABASE_LIB_AVAILABLE = True
@@ -73,7 +72,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. CATÁLOGO MAESTRO REGIÓN CENTRO Y PARÁMETROS AEA 95301
+# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO Y PARÁMETROS AEA 95301
 # =============================================================================
 ANCHO_FRANJA_M = 22.0  # 11m izquierda + 11m derecha desde hilo de guardia (AEA 95301)
 FACTOR_HA_POR_KM = ANCHO_FRANJA_M * 1000.0 / 10000.0  # 2.2 ha por cada km lineal
@@ -147,14 +146,17 @@ def generar_mapa_semanas(anio):
     return pd.DataFrame(semanas)
 
 # =============================================================================
-# 3. PERSISTENCIA DE DATOS (SUPABASE + SQLITE LOCAL)
+# 3. PERSISTENCIA DE DATOS (SUPABASE + RESPALDO SQLITE LOCAL)
 # =============================================================================
 @st.cache_resource
 def init_supabase():
     if SUPABASE_LIB_AVAILABLE and "SUPABASE_URL" in st.secrets and "SUPABASE_KEY" in st.secrets:
         try:
-            return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-        except Exception:
+            url = str(st.secrets["SUPABASE_URL"]).strip()
+            key = str(st.secrets["SUPABASE_KEY"]).strip()
+            return create_client(url, key)
+        except Exception as e:
+            st.error(f"Error conectando a Supabase: {e}")
             return None
     return None
 
@@ -201,8 +203,9 @@ def db_fetch_all():
                 if c not in df.columns:
                     df[c] = 0 if "km" in c or "piq" in c else None
             return df[cols]
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"Aviso consultando Supabase: {e}")
+            return pd.DataFrame(columns=cols)
 
     conn = get_sqlite_conn()
     df = pd.read_sql_query("SELECT * FROM plan_mantenimiento_enre ORDER BY semana_inicio ASC", conn)
@@ -214,8 +217,9 @@ def db_insert_registro(reg):
         try:
             sb_client.table("plan_mantenimiento_enre").insert(reg).execute()
             return
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Error guardando en Supabase: {e}")
+            return
 
     conn = get_sqlite_conn()
     conn.execute("""
@@ -238,8 +242,9 @@ def db_update_avance(reg_id, estado, ejec_km, ejec_piq, s_ini, s_fin, obs):
                 "semana_inicio": int(s_ini), "semana_fin": int(s_fin), "observaciones": obs
             }).eq("id", int(reg_id)).execute()
             return
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Error actualizando en Supabase: {e}")
+            return
 
     conn = get_sqlite_conn()
     conn.execute("""
@@ -255,8 +260,9 @@ def db_delete_registro(reg_id):
         try:
             sb_client.table("plan_mantenimiento_enre").delete().eq("id", int(reg_id)).execute()
             return
-        except Exception:
-            pass
+        except Exception as e:
+            st.error(f"Error eliminando en Supabase: {e}")
+            return
 
     conn = get_sqlite_conn()
     conn.execute("DELETE FROM plan_mantenimiento_enre WHERE id = ?", (int(reg_id),))
@@ -300,7 +306,7 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
         fontSize=9, textColor=colors.HexColor("#334155"), spaceAfter=10
     )
 
-    story.append(Paragraph(f"TRANSNEA S.A. — INFORME TÉCNICO DE MANTENIMIENTO LAT (AUDITORÍA ENRE)", title_style))
+    story.append(Paragraph("TRANSNEA S.A. — INFORME TÉCNICO DE MANTENIMIENTO LAT (AUDITORÍA ENRE)", title_style))
     story.append(Paragraph(
         f"<b>Región Centro</b> | Año Plan: {anio} | Horizonte: {horizonte_txt} | "
         f"Marco Normativo: <b>Reglamentación AEA 95301</b> (Franja de Servidumbre: 22 m totales — 11 m a cada lado del eje/hilo de guardia). "
@@ -308,7 +314,6 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
         sub_style
     ))
 
-    # Sección 1: Estado de Desmonte y Cobertura por Línea (Cuadrilla 1 y Red)
     story.append(Paragraph("<b>1. INDICADORES DE LIMPIEZA DE ELECTRODUCTO (CUADRILLA 1) Y COBERTURA POR LÍNEA</b>", styles["Normal"]))
     story.append(Spacer(1, 5))
 
@@ -346,7 +351,6 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
     story.append(t1)
     story.append(Spacer(1, 12))
 
-    # Sección 2: Detalle de Actividades Programadas y Ejecutadas (4 Cuadrillas)
     story.append(Paragraph("<b>2. CRONOGRAMA Y EJECUCIÓN POR CUADRILLA (ALTAS TENSIONES REGIÓN CENTRO)</b>", styles["Normal"]))
     story.append(Spacer(1, 5))
 
@@ -385,7 +389,6 @@ def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt
 def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista, anio, horizonte_txt):
     wb = openpyxl.Workbook()
 
-    # HOJA 1: INDICADORES DE DESMONTE Y CUMPLIMIENTO POR LÍNEA
     ws1 = wb.active
     ws1.title = "Indicadores_ENRE_Lineas"
 
@@ -433,7 +436,6 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
         max_len = max(len(str(cell.value or "")) for cell in col)
         ws1.column_dimensions[openpyxl.utils.get_column_letter(col[0].column)].width = max(max_len + 3, 14)
 
-    # HOJA 2: CRONOGRAMA SEMANAL (MATRIZ GANTT)
     ws2 = wb.create_sheet(title="Cronograma_Semanal")
     sems = df_semanas_vista["semana"].tolist()
     tot_cols = 6 + len(sems)
@@ -490,6 +492,8 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
 # =============================================================================
 # 5. ENCABEZADO Y SELECTOR DE HORIZONTE TEMPORAL
 # =============================================================================
+estado_cloud_txt = "☁️ Conectado a Supabase (Nube)" if MODO_NUBE else "⚠️ Modo Local (Verificar Secrets)"
+
 st.markdown(f"""
 <div class="banner-enre">
     <div>
@@ -498,7 +502,7 @@ st.markdown(f"""
     </div>
     <div class="banner-badge">
         <strong>Coordinación de Mantenimiento</strong><br>
-        4 Cuadrillas Operativas • Control ENRE
+        {estado_cloud_txt}
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -566,7 +570,6 @@ with tab_indicadores:
         df_anio = df_raw[df_raw["anio"] == anio_sel].copy()
         df_horizonte = df_anio[(df_anio["semana_fin"] >= s_desde) & (df_anio["semana_inicio"] <= s_hasta)].copy()
 
-        # Cálculo específico Cuadrilla 1 (Desmonte y Limpieza de Electroducto - Franja 22m)
         df_desm = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 1 - Desmonte y Limpieza"]
         km_desm_prog = df_desm["prog_km"].sum()
         km_desm_ejec = df_desm["ejec_km"].sum()
@@ -574,17 +577,14 @@ with tab_indicadores:
         pct_cumpl_desm = (km_desm_ejec / km_desm_prog * 100) if km_desm_prog > 0 else 0.0
         pct_red_limpia = (km_desm_ejec / TOTAL_KM_RED * 100) if TOTAL_KM_RED > 0 else 0.0
 
-        # Cálculo Cuadrilla 2 (Alturas y TCT)
         df_c2 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 2 - Alturas y TCT"]
         piq_perf_ejec = df_c2[df_c2["tarea"] == "Perfilado de Aisladores"]["ejec_piq"].sum()
         piq_aisl_camb = df_c2[df_c2["tarea"] == "Cambio de Aisladores (Correctivo)"]["ejec_piq"].sum()
 
-        # Cálculo Cuadrilla 3 (PAT)
         df_c3 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 3 - Puesta a Tierra (PAT)"]
         piq_pat_med = df_c3[df_c3["tarea"] == "Medición de PAT"]["ejec_piq"].sum()
         piq_pat_rep = df_c3[df_c3["tarea"] == "Reparación de PAT"]["ejec_piq"].sum()
 
-        # Cálculo Cuadrilla 4 (Recorridos)
         df_c4 = df_horizonte[df_horizonte["cuadrilla"] == "Cuadrilla 4 - Recorrido e Inspección"]
         km_rec_dron = df_c4[df_c4["tarea"] == "Recorrido con Dron"]["ejec_km"].sum()
         km_rec_vis = df_c4[df_c4["tarea"].str.contains("Visual")]["ejec_km"].sum()
@@ -606,7 +606,6 @@ with tab_indicadores:
 
         st.divider()
 
-        # Tabla consolidada por Línea LAT
         filas_lineas = []
         for sigla, info in CATALOGO_LAT.items():
             km_tot = info["km"]
@@ -679,7 +678,6 @@ with tab_indicadores:
                 use_container_width=True, hide_index=True, height=380
             )
 
-        # Botones de Exportación Oficial para Auditoría ENRE
         st.divider()
         st.markdown("#### 🏛️ Exportación de Informes Oficiales para Auditoría ENRE (AEA 95301)")
         col_ex1, col_ex2 = st.columns(2)
@@ -688,7 +686,7 @@ with tab_indicadores:
         with col_ex1:
             xl_bytes = generar_excel_auditoria_enre(df_resumen_lineas, df_horizonte, df_semanas_vista, anio_sel, horizonte_corto)
             st.download_button(
-                label=f"📊 Descargar Matriz e Indicadores ENRE en Excel (.xlsx)",
+                label="📊 Descargar Matriz e Indicadores ENRE en Excel (.xlsx)",
                 data=xl_bytes,
                 file_name=f"Auditoria_ENRE_Transnea_RegionCentro_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -699,7 +697,7 @@ with tab_indicadores:
             if REPORTLAB_AVAILABLE:
                 pdf_bytes = generar_pdf_auditoria_enre(df_resumen_lineas, df_horizonte, anio_sel, f"{horizonte_corto} (S{s_desde:02d} a S{s_hasta:02d})")
                 st.download_button(
-                    label=f"📄 Descargar Informe Técnico Oficial ENRE en PDF (.pdf)",
+                    label="📄 Descargar Informe Técnico Oficial ENRE en PDF (.pdf)",
                     data=pdf_bytes,
                     file_name=f"Informe_ENRE_AEA95301_Transnea_{anio_sel}_S{s_desde:02d}_S{s_hasta:02d}.pdf",
                     mime="application/pdf",
