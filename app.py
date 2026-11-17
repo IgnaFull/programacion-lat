@@ -1840,12 +1840,11 @@ with tab_mapa:
                     mode="lines", line=dict(width=4, color=color_linea),
                     name=f"LAT {sig}", hoverinfo="skip"
                 ))
-               if sig == "RES-CCE" and not grp.empty:
+                if sig == "RES-CCE" and not grp.empty:
                     ult_r = grp.iloc[-1]
                     et_cc_coords = catalogo_ets_actual.get("ET Corrientes Centro", (-27.470142, -58.853417))
                     lat_puente_salida = -27.481200
                     lon_puente_salida = -58.834500
-                    
                     fig_map.add_trace(go.Scattermap(
                         lat=[ult_r["latitud"], lat_puente_salida, et_cc_coords[0]],
                         lon=[ult_r["longitud"], lon_puente_salida, et_cc_coords[1]],
