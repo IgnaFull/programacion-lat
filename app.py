@@ -6,6 +6,7 @@ import math
 import re
 import sqlite3
 import io
+from xml.sax.saxutils import escape as xml_escape
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -78,6 +79,7 @@ st.markdown("""
 # =============================================================================
 ANCHO_FRANJA_M = 22.0  # 11m izquierda + 11m derecha desde hilo de guardia (AEA 95301)
 FACTOR_HA_POR_KM = ANCHO_FRANJA_M * 1000.0 / 10000.0  # 2.2 ha por cada km lineal
+COORD_ET_CCE = (-27.470142, -58.853417)  # Estación Transformadora Corrientes Centro
 
 CATALOGO_LAT = {
     "ECO-SMA": {"tramo": "El Colorado (Formosa) / San Martín (Chaco)", "km": 30.47, "piquetes": 126, "color": "#E11D48"},
@@ -91,15 +93,14 @@ CATALOGO_LAT = {
     "BVI-GOY": {"tramo": "Bella Vista (Corrientes) / Goya (Corrientes)", "km": 77.70, "piquetes": 303, "color": "#EC4899"},
 }
 
-# Inventario ampliado para Precosteo 2026 (13 líneas del Excel de referencia + ECO-SMA)
 INVENTARIO_PRECOSTEO_BASE = [
     {"prio": 1, "cod": "1SCABVI1", "lat": "SCA-BVI", "tramo": "Santa Catalina - Bella Vista", "kv": 132, "km": 121.00, "region_9": True, "unico_xl": True, "pct_entorno": 65.0, "entorno": "Monte / Estero cerrado", "obs": "Corredor principal sur Corrientes"},
     {"prio": 2, "cod": "1BVIGOY1", "lat": "BVI-GOY", "tramo": "Bella Vista - Goya", "kv": 132, "km": 77.70, "region_9": True, "unico_xl": True, "pct_entorno": 60.0, "entorno": "Monte nativo / Rural", "obs": "Corredor sur Corrientes"},
     {"prio": 3, "cod": "1LLERES1", "lat": "RES-LLE", "tramo": "La Leonesa - Resistencia", "kv": 132, "km": 62.80, "region_9": True, "unico_xl": True, "pct_entorno": 48.0, "entorno": "Mixto rural / Bañado", "obs": "Corredor Ruta 11 Chaco"},
     {"prio": 4, "cod": "1LLEMAN1", "lat": "LLE-MAN", "tramo": "La Leonesa - Mansilla", "kv": 132, "km": 46.60, "region_9": True, "unico_xl": True, "pct_entorno": 68.0, "entorno": "Monte alto / Río Bermejo", "obs": "Tramo interprovincial Chaco - Formosa"},
-    {"prio": 5, "cod": "1RESSCA1", "lat": "RES-SCA", "tramo": "Resistencia - Santa Catalina", "kv": 132, "km": 37.47, "region_9": True, "unico_xl": True, "pct_entorno": 42.0, "entorno": "Suburbano / Bañado", "obs": "Tramo aéreo (desc. 4,93 km subt.)"},
+    {"prio": 5, "cod": "1RESSCA1", "lat": "RES-SCA", "tramo": "Resistencia - Santa Catalina", "kv": 132, "km": 37.47, "region_9": True, "unico_xl": True, "pct_entorno": 42.0, "entorno": "Suburbano / Bañado", "obs": "Tramo aéreo (desc. 4,93 km subt. ET Sarmiento)"},
     {"prio": 6, "cod": "1RESBAR2", "lat": "RES-BAR 2", "tramo": "Resistencia - Barranqueras 2", "kv": 132, "km": 31.40, "region_9": True, "unico_xl": True, "pct_entorno": 22.0, "entorno": "Periurbano / Industrial", "obs": "Corredor periurbano Resistencia"},
-    {"prio": 7, "cod": "1RESCOR1", "lat": "RES-CCE", "tramo": "Resistencia - Corrientes Centro", "kv": 132, "km": 30.50, "region_9": True, "unico_xl": True, "pct_entorno": 30.0, "entorno": "Periurbano / Cruce río", "obs": "Cruce interprovincial Chaco - Corrientes"},
+    {"prio": 7, "cod": "1RESCOR1", "lat": "RES-CCE", "tramo": "Resistencia - Corrientes Centro", "kv": 132, "km": 30.50, "region_9": True, "unico_xl": True, "pct_entorno": 30.0, "entorno": "Periurbano / Cruce río", "obs": "Tramo aéreo hasta Puente Belgrano"},
     {"prio": 8, "cod": "1ECOSMA1", "lat": "ECO-SMA", "tramo": "El Colorado - San Martín", "kv": 132, "km": 30.47, "region_9": True, "unico_xl": False, "pct_entorno": 65.0, "entorno": "Monte nativo / Bermejo", "obs": "Incorporada (faltante en Excel ref.)"},
     {"prio": 9, "cod": "1RESBAR1", "lat": "RES-BAR 1", "tramo": "Resistencia - Barranqueras 1", "kv": 132, "km": 30.20, "region_9": True, "unico_xl": True, "pct_entorno": 22.0, "entorno": "Periurbano / Industrial", "obs": "Corredor periurbano Resistencia"},
     {"prio": 10, "cod": "1PPASCA1", "lat": "PPA-SCA 1", "tramo": "Paso de la Patria - Santa Catalina (T1)", "kv": 132, "km": 20.81, "region_9": False, "unico_xl": True, "pct_entorno": 45.0, "entorno": "Rural / Forestal", "obs": "Propietario T.I. ENECOR - Doble terna"},
@@ -109,7 +110,6 @@ INVENTARIO_PRECOSTEO_BASE = [
     {"prio": 14, "cod": "1CORSCA1", "lat": "COR-SCA", "tramo": "Corrientes Centro - Santa Catalina", "kv": 132, "km": 5.80, "region_9": False, "unico_xl": False, "pct_entorno": 15.0, "entorno": "Urbano / Periurbano", "obs": "Zona urbana Corrientes - Santa Catalina"},
 ]
 
-# Ciclos de rebrote vegetal en Región NEA (días base para invasión completa de franja)
 CICLOS_VEGETACION_DIAS = {
     "Monte Nativo / Chilcal": 420,      # ~14 meses
     "Bañado / Estero / Juncal": 540,    # ~18 meses
@@ -178,6 +178,17 @@ def normalizar_sigla_lat(nombre):
         "RES-COR": "RES-CCE",
     }
     return equivalencias.get(s, s)
+
+def es_tramo_sin_desmonte(sigla_lat, piq_ini_str, piq_fin_str):
+    """Identifica tramos subterráneos urbanos o cruce de río sin franja de desmonte."""
+    p1 = str(piq_ini_str).strip()
+    p2 = str(piq_fin_str).strip()
+    if sigla_lat in ["RES-CCE", "RES-SCA"]:
+        if (p1 == "94" and p2 == "95") or (p1 == "95" and p2 == "96"):
+            return True, "Cruce Río Paraná (Sin desmonte)"
+        if sigla_lat == "RES-SCA" and p1 == "96" and p2 == "101":
+            return True, "Cable Subterráneo (Puente Belgrano -> ET Sarmiento)"
+    return False, "Tramo Aéreo"
 
 def distancia_geodesica_m(lat1, lon1, lat2, lon2):
     """Fórmula geodésica esférica idéntica a la hoja Auxiliar Distancia (en metros)."""
@@ -289,6 +300,97 @@ def crear_grafico_torta(titulo, ejecutado, total, unidad, color_ejec):
         paper_bgcolor="#0F172A"
     )
     return fig
+
+def generar_kml_vanos_criticos(df_map, ancho_serv_m, fecha_eval, umbral_critico=30.0):
+    """
+    Genera un archivo KML listo para abrir en Google Earth Pro con los vanos aéreos marcados
+    como críticos (< umbral_critico% limpio), agrupados por carpeta de Línea LAT.
+    """
+    kml_parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<kml xmlns="http://www.opengis.net/kml/2.2">',
+        '  <Document>',
+        f'    <name>{xml_escape(f"TRANSNEA - Vanos Críticos Monte (<{umbral_critico:.0f}% limpio) - {fecha_eval.strftime(\"%d/%m/%Y\")}")}</name>',
+        f'    <description>{xml_escape(f"Auditoría satelital Sentinel-2 | Franja AEA 95301 ({ancho_serv_m:.0f}m) | Región Centro")}</description>',
+        '    <Style id="estiloVanoCritico">',
+        '      <LineStyle>',
+        '        <color>ff2626dc</color>',
+        '        <width>6</width>',
+        '      </LineStyle>',
+        '      <IconStyle>',
+        '        <color>ff2626dc</color>',
+        '        <scale>0.85</scale>',
+        '        <Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-circle.png</href></Icon>',
+        '      </IconStyle>',
+        '    </Style>',
+    ]
+
+    total_criticos = 0
+    total_ha_monte = 0.0
+
+    for sig, grp in df_map.groupby("linea", sort=False):
+        grp = grp.reset_index(drop=True)
+        tramo_info = CATALOGO_LAT.get(sig, {}).get("tramo", sig)
+        placemarks_linea = []
+
+        for i in range(len(grp) - 1):
+            r1 = grp.iloc[i]
+            r2 = grp.iloc[i + 1]
+            if float(r1.get("dist_desm_m", r1["dist_m"])) == 0.0:
+                continue
+
+            pct_v = float(r1["pct_vigente"])
+            if pct_v < umbral_critico:
+                total_criticos += 1
+                dist_m = float(r1["dist_desm_m"])
+                ha_tot_vano = float(r1["hectareas"])
+                ha_monte_vano = ha_tot_vano * max(0.0, (100.0 - pct_v) / 100.0)
+                total_ha_monte += ha_monte_vano
+
+                nombre_vano = f"LAT {sig} | Vano Piq. {r1['piquete']} -> {r2['piquete']} ({pct_v:.0f}% limpio)"
+                desc_html = (
+                    f"<![CDATA["
+                    f"<b>Línea:</b> {xml_escape(str(sig))} ({xml_escape(str(tramo_info))})<br/>"
+                    f"<b>Tramo Crítico:</b> Piquete {xml_escape(str(r1['piquete']))} a Piquete {xml_escape(str(r2['piquete']))}<br/>"
+                    f"<b>Longitud Vano:</b> {dist_m:.1f} m<br/>"
+                    f"<b>Superficie Franja ({ancho_serv_m:.0f}m):</b> {ha_tot_vano:.3f} ha<br/>"
+                    f"<b>Monte Pendiente Estimado:</b> {ha_monte_vano:.3f} ha ({100.0 - pct_v:.1f}% invadido)<br/>"
+                    f"<b>Estado Vigente ({fecha_eval.strftime('%d/%m/%Y')}):</b> {pct_v:.1f}% limpio<br/>"
+                    f"<b>Vegetación Detectada:</b> {xml_escape(str(r1['tipo_vegetacion']))}<br/>"
+                    f"<b>Última Toma Satelital / Limpieza:</b> {xml_escape(str(r1['fecha_limpieza']))}<br/>"
+                    f"<b>Estructura Inicio:</b> {xml_escape(str(r1['tipo']))} - {xml_escape(str(r1['estructura']))}"
+                    f"]]>"
+                )
+
+                lon1, lat1 = float(r1["longitud"]), float(r1["latitud"])
+                lon2, lat2 = float(r2["longitud"]), float(r2["latitud"])
+
+                placemarks_linea.append(f"""      <Placemark>
+        <name>{xml_escape(nombre_vano)}</name>
+        <description>{desc_html}</description>
+        <styleUrl>#estiloVanoCritico</styleUrl>
+        <MultiGeometry>
+          <Point>
+            <coordinates>{lon1:.6f},{lat1:.6f},0</coordinates>
+          </Point>
+          <LineString>
+            <tessellate>1</tessellate>
+            <coordinates>{lon1:.6f},{lat1:.6f},0 {lon2:.6f},{lat2:.6f},0</coordinates>
+          </LineString>
+        </MultiGeometry>
+      </Placemark>""")
+
+        if placemarks_linea:
+            kml_parts.append("    <Folder>")
+            kml_parts.append(f"      <name>{xml_escape(f'LAT {sig} ({len(placemarks_linea)} vanos críticos)')}</name>")
+            kml_parts.extend(placemarks_linea)
+            kml_parts.append("    </Folder>")
+
+    kml_parts.append("  </Document>")
+    kml_parts.append("</kml>")
+
+    kml_str = "\n".join(kml_parts)
+    return kml_str.encode("utf-8"), total_criticos, round(total_ha_monte, 2)
 
 # =============================================================================
 # 3. PERSISTENCIA DE DATOS (PLAN ENRE + GPS PIQUETES + CAMPO REAL)
@@ -1208,7 +1310,6 @@ with tab_precosteo:
     st.markdown("### 💰 Precosteo 2026 y Estimación de Hectáreas Reales a Desmontar")
     st.caption("Modelo indexado a litros equivalentes de gasoil (AEA 95301) con calibración por datos satelitales Sentinel-2, entorno geográfico o edición manual por línea.")
 
-    # Calcular % de monte pendiente desde los datos reales de Supabase (piquetes_gps)
     pct_monte_satelite = {}
     if not df_gps_all.empty:
         df_gps_calc = df_gps_all.copy()
@@ -1219,6 +1320,9 @@ with tab_precosteo:
             tot_m = 0.0
             monte_m = 0.0
             for i in range(len(grp) - 1):
+                sin_desm, _ = es_tramo_sin_desmonte(sig, grp.loc[i, "piquete"], grp.loc[i+1, "piquete"])
+                if sin_desm:
+                    continue
                 dm = distancia_geodesica_m(grp.loc[i, "latitud"], grp.loc[i, "longitud"], grp.loc[i+1, "latitud"], grp.loc[i+1, "longitud"])
                 pct_limp_vig = calcular_limpieza_vigente(grp.loc[i, "pct_desmonte"], grp.loc[i, "fecha_limpieza"], grp.loc[i, "tipo_vegetacion"], date.today())
                 frac_monte = max(0.0, min(1.0, (100.0 - pct_limp_vig) / 100.0))
@@ -1269,14 +1373,12 @@ with tab_precosteo:
         with pp4:
             prec_lit_dis = st.number_input("Disco Año 2+ (L/ha)", min_value=30.0, max_value=500.0, value=120.0, step=10.0, key="prec_lit_dis")
 
-    # Filtrar inventario según alcance
     df_inv = pd.DataFrame(INVENTARIO_PRECOSTEO_BASE)
     if alcance_prec.startswith("9 Líneas"):
         df_inv = df_inv[df_inv["region_9"]].copy()
     elif alcance_prec.startswith("10 Corredores"):
         df_inv = df_inv[df_inv["unico_xl"]].copy()
 
-    # Asignar % monte según el método seleccionado
     pcts_asignados = []
     for r in df_inv.itertuples():
         sig_norm = normalizar_sigla_lat(r.lat)
@@ -1314,7 +1416,6 @@ with tab_precosteo:
         key="editor_precosteo_lineas"
     )
 
-    # Cálculos exactos replicating las fórmulas del Excel
     df_calc = df_edited.copy()
     df_calc["HA_Total"] = (df_calc["KM"] * prec_ancho / 10.0).round(2)
     df_calc["HA_Desmonte"] = (df_calc["HA_Total"] * (df_calc["Pct_Monte"] / 100.0)).round(2)
@@ -1384,7 +1485,7 @@ with tab_precosteo:
     st.download_button(
         label="📥 Descargar Planilla de Precosteo Actualizada para Gerencia (.xlsx)",
         data=xl_prec_bytes,
-        file_name=f"Precosteo_Limpieza_2026_Zona_Centro_Calibrado.xlsx",
+        file_name="Precosteo_Limpieza_2026_Zona_Centro_Calibrado.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         use_container_width=True,
@@ -1392,11 +1493,11 @@ with tab_precosteo:
     )
 
 # =============================================================================
-# PESTAÑA 3: MAPA DE RED (REGIÓN CENTRO + MOTOR DE REBROTE CÍCLICO + SATÉLITE)
+# PESTAÑA 3: MAPA DE RED (REGIÓN CENTRO + SUBTERRÁNEO + REBROTE + SATÉLITE)
 # =============================================================================
 with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
-    st.caption("Monitoreo geográfico en tiempo real integrado con Sentinel-2 (NDVI), modelo de rebrote cíclico estacional NEA y calibración de campo/dron.")
+    st.caption("Monitoreo geográfico en tiempo real integrado con Sentinel-2 (NDVI + NDMI + SCL), tramos subterráneos urbanos (ET Ctes. Centro / ET Sarmiento) y rebrote estacional NEA.")
 
     cm1, cm2, cm3, cm4, cm5 = st.columns([1.8, 1.4, 1.8, 1.6, 1.4])
     with cm1:
@@ -1449,22 +1550,34 @@ with tab_mapa:
         df_map = df_map.sort_values(["linea", "_nat"]).drop(columns=["_nat"]).reset_index(drop=True)
 
         dist_m_list = []
+        dist_desm_m_list = []
+        tipo_tramo_list = []
+
         for sig, grp in df_map.groupby("linea", sort=False):
             lats = grp["latitud"].tolist()
             lons = grp["longitud"].tolist()
+            piqs = grp["piquete"].tolist()
             for i in range(len(grp)):
                 if i < len(grp) - 1:
                     d_m = distancia_geodesica_m(lats[i], lons[i], lats[i+1], lons[i+1])
+                    sin_desm, motivo_tramo = es_tramo_sin_desmonte(sig, piqs[i], piqs[i+1])
                 else:
                     d_m = float(grp.iloc[i]["dist_km"] or 0.0) * 1000.0
+                    sin_desm = (sig == "RES-CCE")
+                    motivo_tramo = "Cable Subterráneo -> ET Corrientes Centro" if sig == "RES-CCE" else "Fin de Línea"
+
                 dist_m_list.append(d_m)
+                dist_desm_m_list.append(0.0 if sin_desm else d_m)
+                tipo_tramo_list.append(motivo_tramo)
 
         df_map["dist_m"] = dist_m_list
-        df_map["area_m2"] = df_map["dist_m"] * ancho_serv_sel
+        df_map["dist_desm_m"] = dist_desm_m_list
+        df_map["tipo_tramo"] = tipo_tramo_list
+        df_map["area_m2"] = df_map["dist_desm_m"] * ancho_serv_sel
         df_map["hectareas"] = df_map["area_m2"] / 10000.0
 
         df_map["pct_vigente"] = [
-            calcular_limpieza_vigente(r.pct_desmonte, r.fecha_limpieza, r.tipo_vegetacion, fecha_evaluacion)
+            100.0 if r.dist_desm_m == 0.0 else calcular_limpieza_vigente(r.pct_desmonte, r.fecha_limpieza, r.tipo_vegetacion, fecha_evaluacion)
             for r in df_map.itertuples()
         ]
         df_map["ha_limpias_vig"] = df_map["hectareas"] * (df_map["pct_vigente"] / 100.0)
@@ -1484,21 +1597,23 @@ with tab_mapa:
         mk1, mk2, mk3, mk4, mk5 = st.columns(5)
         mk1.metric("Piquetes Georreferenciados", f"{len(df_map):,}")
         mk2.metric("Longitud GPS Calculada", f"{km_vista:.2f} km")
-        mk3.metric(f"Superficie Electroducto ({ancho_serv_sel:.0f}m)", f"{m2_vista:,.0f} m²", f"{ha_vista:.2f} ha totales")
+        mk3.metric(f"Servidumbre Desmontable ({ancho_serv_sel:.0f}m)", f"{m2_vista:,.0f} m²", f"{ha_vista:.2f} ha aéreas")
         mk4.metric(f"Superficie Limpia ({fecha_evaluacion.strftime('%d/%m/%Y')})", f"{ha_limpias_vista:.2f} ha", f"{pct_limpio_vista:.1f}% vigente")
         mk5.metric("Piquetes Campo (Perf / PAT)", f"{int(df_map['tiene_perf'].sum())} / {int(df_map['tiene_pat'].sum())}")
 
         if capa_operativa == "Estado Vegetación Vigente (Ciclo Real)":
-            st.caption("🟢 **Óptimo (≥ 70% limpio)** | 🟡 **Preventivo / Rebrote (30% a 69%)** | 🔴 **Crítico / Intervenir (< 30% limpio)**")
+            st.caption("🟢 **Óptimo (≥ 70% limpio)** | 🟡 **Preventivo / Rebrote (30% a 69%)** | 🔴 **Crítico / Intervenir (< 30% limpio)** | ⚪ **Subterráneo / Río (Sin desmonte)**")
 
         fig_map = go.Figure()
 
         for sig, grp in df_map.groupby("linea", sort=False):
+            grp = grp.reset_index(drop=True)
             color_linea = CATALOGO_LAT.get(sig, {}).get("color", "#D946EF")
 
             hover_txts = [
                 f"<b>LAT {r.linea} — Piquete {r.piquete}</b><br>"
                 f"Tipo: {r.tipo} | Estructura: {r.estructura}<br>"
+                f"Tramo: <b>{r.tipo_tramo}</b><br>"
                 f"Vegetación: {r.tipo_vegetacion}<br>"
                 f"Última Toma / Limpieza: {r.fecha_limpieza} (Base: {r.pct_desmonte:.0f}%)<br>"
                 f"<b>Estado Vigente ({fecha_evaluacion.strftime('%d/%m/%Y')}): {r.pct_vigente:.1f}% limpio</b><br>"
@@ -1507,19 +1622,47 @@ with tab_mapa:
                 for r in grp.itertuples()
             ]
 
-            fig_map.add_trace(go.Scattermap(
-                lat=grp["latitud"],
-                lon=grp["longitud"],
-                mode="lines",
-                line=dict(width=4, color=color_linea),
-                name=f"LAT {sig}",
-                hoverinfo="skip"
-            ))
+            if sig == "RES-SCA" and "96" in grp["piquete"].values and "101" in grp["piquete"].values:
+                idx_96 = grp[grp["piquete"] == "96"].index[0]
+                idx_101 = grp[grp["piquete"] == "101"].index[0]
+                grp_tramo1 = grp.iloc[:idx_96 + 1]
+                grp_subt = grp.iloc[idx_96:idx_101 + 1]
+                grp_tramo2 = grp.iloc[idx_101:]
+
+                fig_map.add_trace(go.Scattermap(
+                    lat=grp_tramo1["latitud"], lon=grp_tramo1["longitud"],
+                    mode="lines", line=dict(width=4, color=color_linea),
+                    name=f"LAT {sig} (Aéreo)", hoverinfo="skip"
+                ))
+                fig_map.add_trace(go.Scattermap(
+                    lat=grp_subt["latitud"], lon=grp_subt["longitud"],
+                    mode="lines", line=dict(width=3, color="#94A3B8"),
+                    name="RES-SCA Subterráneo (Puente -> ET Sarmiento)", hoverinfo="skip"
+                ))
+                fig_map.add_trace(go.Scattermap(
+                    lat=grp_tramo2["latitud"], lon=grp_tramo2["longitud"],
+                    mode="lines", line=dict(width=4, color=color_linea),
+                    name="LAT RES-SCA (ET Sarmiento -> ET Sta. Catalina)", showlegend=False, hoverinfo="skip"
+                ))
+            else:
+                fig_map.add_trace(go.Scattermap(
+                    lat=grp["latitud"], lon=grp["longitud"],
+                    mode="lines", line=dict(width=4, color=color_linea),
+                    name=f"LAT {sig}", hoverinfo="skip"
+                ))
+                if sig == "RES-CCE" and not grp.empty:
+                    ult_r = grp.iloc[-1]
+                    fig_map.add_trace(go.Scattermap(
+                        lat=[ult_r["latitud"], COORD_ET_CCE[0]],
+                        lon=[ult_r["longitud"], COORD_ET_CCE[1]],
+                        mode="lines", line=dict(width=3, color="#94A3B8"),
+                        name="RES-CCE Subterráneo (Puente -> ET Ctes. Centro)", hoverinfo="skip"
+                    ))
 
             if capa_operativa == "Estado Vegetación Vigente (Ciclo Real)":
                 colores_pts = [
-                    "#10B981" if p >= 70.0 else ("#F59E0B" if p >= 30.0 else "#EF4444")
-                    for p in grp["pct_vigente"]
+                    "#94A3B8" if r.dist_desm_m == 0.0 else ("#10B981" if r.pct_vigente >= 70.0 else ("#F59E0B" if r.pct_vigente >= 30.0 else "#EF4444"))
+                    for r in grp.itertuples()
                 ]
             elif capa_operativa == "Perfilado Real (Campo)":
                 colores_pts = ["#3B82F6" if ok else color_linea for ok in grp["tiene_perf"]]
@@ -1557,6 +1700,27 @@ with tab_mapa:
             )
         )
         st.plotly_chart(fig_map, use_container_width=True, key="mapa_red_region_centro")
+
+        # Exportación KML de tramos críticos para auditoría en Google Earth Pro
+        kml_bytes, n_criticos, ha_criticas = generar_kml_vanos_criticos(df_map, ancho_serv_sel, fecha_evaluacion, umbral_critico=30.0)
+        scope_tag = "Region_Centro" if mapa_linea_sel.startswith("TODAS") else mapa_linea_sel
+        ck1, ck2 = st.columns([2.2, 1.8])
+        with ck1:
+            st.info(
+                f"🛰️ **Auditoría Visual Google Earth Pro:** Se detectaron **{n_criticos} vanos aéreos críticos** "
+                f"(< 30% limpio) que suman **{ha_criticas:.2f} ha** de monte estimado en esta vista."
+            )
+        with ck2:
+            st.download_button(
+                label=f"🌍 Descargar KML Vanos Críticos ({n_criticos} vanos)",
+                data=kml_bytes,
+                file_name=f"Vanos_Criticos_{scope_tag}_{fecha_evaluacion.strftime('%Y%m%d')}.kml",
+                mime="application/vnd.google-earth.kml+xml",
+                type="primary",
+                use_container_width=True,
+                disabled=(n_criticos == 0),
+                key="dl_kml_vanos_criticos"
+            )
 
     st.divider()
 
@@ -1757,6 +1921,9 @@ with tab_mapa:
                         tot_m = 0.0
                         limpio_m = 0.0
                         for i in range(len(sub_gps_l) - 1):
+                            sin_desm, _ = es_tramo_sin_desmonte(linea_desm_xl, piqs[i], piqs[i+1])
+                            if sin_desm:
+                                continue
                             dm = distancia_geodesica_m(lats[i], lons[i], lats[i+1], lons[i+1])
                             pct_i = mapa_pct.get(str(piqs[i]).strip(), 0.0) / 100.0
                             tot_m += dm
@@ -1821,6 +1988,9 @@ with tab_mapa:
             tramo_df = sub_c.iloc[idx1:idx2+1].reset_index(drop=True)
             dist_tramo_m = 0.0
             for i in range(len(tramo_df) - 1):
+                sin_desm, _ = es_tramo_sin_desmonte(calc_linea, tramo_df.loc[i, "piquete"], tramo_df.loc[i+1, "piquete"])
+                if sin_desm:
+                    continue
                 dist_tramo_m += distancia_geodesica_m(
                     tramo_df.loc[i, "latitud"], tramo_df.loc[i, "longitud"],
                     tramo_df.loc[i+1, "latitud"], tramo_df.loc[i+1, "longitud"]
@@ -1835,7 +2005,7 @@ with tab_mapa:
             pct_sobre_linea = ((dist_ejec_m / 1000.0) / km_linea_cat * 100) if km_linea_cat > 0 else 0.0
 
             rk1, rk2, rk3, rk4 = st.columns(4)
-            rk1.metric("Distancia Tramo", f"{dist_tramo_m:,.1f} m", f"{dist_tramo_m/1000.0:.2f} km")
+            rk1.metric("Distancia Aérea Tramo", f"{dist_tramo_m:,.1f} m", f"{dist_tramo_m/1000.0:.2f} km")
             rk2.metric(f"Superficie ({ancho_serv_sel:.0f}m)", f"{sup_ejec_m2:,.0f} m²", f"de {sup_total_m2:,.0f} m²")
             rk3.metric("Hectáreas Limpias", f"{ha_ejec_tramo:.2f} ha", f"de {ha_total_tramo:.2f} ha")
             rk4.metric("% Avance s/ Línea Total", f"{pct_sobre_linea:.2f}%", f"sobre {km_linea_cat} km")
