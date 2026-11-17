@@ -77,26 +77,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO, ESTACIONES TRANSFORMADORAS Y PRECOSTEO
+# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO Y PRECOSTEO
 # =============================================================================
 ANCHO_FRANJA_M = 22.0  # 11m izquierda + 11m derecha desde hilo de guardia (AEA 95301)
 FACTOR_HA_POR_KM = ANCHO_FRANJA_M * 1000.0 / 10000.0  # 2.2 ha por cada km lineal
-
-CATALOGO_ETS = {
-    "ET Resistencia": (-27.301114, -59.107262),
-    "ET Corrientes Centro": (-27.470142, -58.853417),
-    "ET Santa Catalina": (-27.438500, -58.785000),
-    "ET Barranqueras 1": (-27.785000, -58.955000),
-    "ET Barranqueras 2": (-27.795000, -58.965000),
-    "ET Bella Vista": (-28.512000, -59.048000),
-    "ET Goya": (-29.145000, -59.265000),
-    "ET La Leonesa": (-27.052000, -58.705000),
-    "ET General Mansilla": (-25.980000, -58.950000),
-    "ET El Colorado": (-26.310000, -59.385000),
-    "ET Gral. San Martín": (-26.540000, -59.360000),
-    "ET Paso de la Patria": (-27.315000, -58.575000),
-    "ET Sarmiento": (-27.475000, -58.845000),
-}
 
 CATALOGO_LAT = {
     "ECO-SMA": {"tramo": "El Colorado (Formosa) / San Martín (Chaco)", "km": 30.47, "piquetes": 126, "color": "#E11D48"},
@@ -535,7 +519,7 @@ def extraer_id_piquete_de_nombre(nombre_str, set_piqs_validos):
     return None
 
 # =============================================================================
-# 3. PERSISTENCIA DE DATOS
+# 3. PERSISTENCIA DE DATOS Y GESTIÓN DINÁMICA DE ETs
 # =============================================================================
 @st.cache_resource
 def init_supabase():
@@ -590,8 +574,73 @@ def get_sqlite_conn():
             UNIQUE(linea, piquete)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS estaciones_transformadoras (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE,
+            latitud REAL NOT NULL,
+            longitud REAL NOT NULL
+        )
+    """)
     conn.commit()
     return conn
+
+def db_fetch_ets():
+    ets_dict = {}
+    if MODO_NUBE:
+        try:
+            r = sb_client.table("estaciones_transformadoras").select("*").execute()
+            if r.data:
+                for row in r.data:
+                    ets_dict[row["nombre"]] = (float(row["latitud"]), float(row["longitud"]))
+        except Exception:
+            pass
+
+    if not ets_dict:
+        conn = get_sqlite_conn()
+        res = conn.execute("SELECT nombre, latitud, longitud FROM estaciones_transformadoras").fetchall()
+        conn.close()
+        for nom, lat, lon in res:
+            ets_dict[nom] = (float(lat), float(lon))
+
+    # Fallback por defecto si la tabla está vacía
+    if not ets_dict:
+        ets_dict = {
+            "ET Resistencia": (-27.301114, -59.107262),
+            "ET Corrientes Centro": (-27.470142, -58.853417),
+            "ET Santa Catalina": (-27.438500, -58.785000),
+            "ET Barranqueras 1": (-27.785000, -58.955000),
+            "ET Barranqueras 2": (-27.795000, -58.965000),
+            "ET Bella Vista": (-28.512000, -59.048000),
+            "ET Goya": (-29.145000, -59.265000),
+            "ET La Leonesa": (-27.052000, -58.705000),
+            "ET General Mansilla": (-25.980000, -58.950000),
+            "ET El Colorado": (-26.310000, -59.385000),
+            "ET Gral. San Martín": (-26.540000, -59.360000),
+            "ET Paso de la Patria": (-27.315000, -58.575000),
+            "ET Sarmiento": (-27.475000, -58.845000),
+        }
+    return ets_dict
+
+def db_upsert_et(nombre, lat, lon):
+    if MODO_NUBE:
+        try:
+            sb_client.table("estaciones_transformadoras").upsert(
+                {"nombre": str(nombre).strip(), "latitud": float(lat), "longitud": float(lon)},
+                on_conflict="nombre"
+            ).execute()
+            return
+        except Exception:
+            pass
+
+    conn = get_sqlite_conn()
+    conn.execute("""
+        INSERT INTO estaciones_transformadoras (nombre, latitud, longitud)
+        VALUES (?, ?, ?)
+        ON CONFLICT(nombre) DO UPDATE SET latitud=excluded.latitud, longitud=excluded.longitud
+    """, (str(nombre).strip(), float(lat), float(lon)))
+    conn.commit()
+    conn.close()
 
 def db_fetch_plan():
     cols = [
@@ -675,7 +724,6 @@ def db_upsert_gps_batch(records):
             return
         except Exception as e:
             if "fecha_limpieza" in str(e) or "tipo_vegetacion" in str(e):
-                st.warning("⚠️ Ejecutá el script de migración en Supabase para habilitar fechas y tipo de vegetación.")
                 recs_fallback = [{k: v for k, v in r.items() if k not in ["fecha_limpieza", "tipo_vegetacion"]} for r in records]
                 for i in range(0, len(recs_fallback), 500):
                     sb_client.table("piquetes_gps").upsert(recs_fallback[i:i+500], on_conflict="linea,piquete").execute()
@@ -1223,6 +1271,7 @@ df_semanas_vista = df_semanas_anio[(df_semanas_anio["semana"] >= s_desde) & (df_
 df_raw = db_fetch_plan()
 df_gps_all = db_fetch_gps()
 df_perf_real, df_pat_real = fetch_datos_reales_supabase()
+catalogo_ets_actual = db_fetch_ets()
 
 tab_indicadores, tab_precosteo, tab_mapa, tab_cronograma, tab_cargar, tab_gestion = st.tabs([
     "📊 Indicadores y Auditoría ENRE",
@@ -1794,9 +1843,10 @@ with tab_mapa:
                 ))
                 if sig == "RES-CCE" and not grp.empty:
                     ult_r = grp.iloc[-1]
+                    et_cc_coords = catalogo_ets_actual.get("ET Corrientes Centro", (-27.470142, -58.853417))
                     fig_map.add_trace(go.Scattermap(
-                        lat=[ult_r["latitud"], CATALOGO_ETS["ET Corrientes Centro"][0]],
-                        lon=[ult_r["longitud"], CATALOGO_ETS["ET Corrientes Centro"][1]],
+                        lat=[ult_r["latitud"], et_cc_coords[0]],
+                        lon=[ult_r["longitud"], et_cc_coords[1]],
                         mode="lines", line=dict(width=3, color="#94A3B8"),
                         name="RES-CCE Subterráneo (Puente -> ET Ctes. Centro)", hoverinfo="skip"
                     ))
@@ -1824,22 +1874,23 @@ with tab_mapa:
                 showlegend=False
             ))
 
-        # Agregar Estaciones Transformadoras (ET) al mapa
-        et_lats = [coords[0] for coords in CATALOGO_ETS.values()]
-        et_lons = [coords[1] for coords in CATALOGO_ETS.values()]
-        et_names = list(CATALOGO_ETS.keys())
+        # Agregar Estaciones Transformadoras (ET) dinámicas al mapa
+        et_lats = [coords[0] for coords in catalogo_ets_actual.values()]
+        et_lons = [coords[1] for coords in catalogo_ets_actual.values()]
+        et_names = list(catalogo_ets_actual.keys())
 
-        fig_map.add_trace(go.Scattermap(
-            lat=et_lats,
-            lon=et_lons,
-            mode="markers+text",
-            marker=dict(size=12, color="#F59E0B", symbol="square"),
-            text=et_names,
-            textposition="top right",
-            textfont=dict(color="#FDE68A", size=11),
-            name="Estaciones Transformadoras (ET)",
-            hovertemplate="<b>%{text}</b><br>Lat: %{lat:.6f}<br>Lon: %{lon:.6f}<extra></extra>"
-        ))
+        if et_lats:
+            fig_map.add_trace(go.Scattermap(
+                lat=et_lats,
+                lon=et_lons,
+                mode="markers+text",
+                marker=dict(size=12, color="#F59E0B", symbol="square"),
+                text=et_names,
+                textposition="top right",
+                textfont=dict(color="#FDE68A", size=11),
+                name="Estaciones Transformadoras (ET)",
+                hovertemplate="<b>%{text}</b><br>Lat: %{lat:.6f}<br>Lon: %{lon:.6f}<extra></extra>"
+            ))
 
         centro_lat = float(df_map["latitud"].mean())
         centro_lon = float(df_map["longitud"].mean())
@@ -1892,7 +1943,7 @@ with tab_mapa:
 
     with subtab_kml:
         st.markdown("##### 🌍 Importar Correcciones de Google Earth Pro (`.kml` / `.kmz`)")
-        st.caption("Subí un archivo exportado desde Google Earth Pro para corregir coordenadas exactas de piquetes (Marcadores de posición) o actualizar el estado de limpieza de tramos verificados visualmente (Polígonos o Rutas).")
+        st.caption("Subí un archivo exportado desde Google Earth Pro para corregir coordenadas exactas de piquetes, rutas o registrar automáticamente Estaciones Transformadoras (ET).")
 
         if df_gps_all.empty:
             st.info("Cargá primero la base de coordenadas GPS para cruzar archivos de Google Earth Pro.")
@@ -1913,6 +1964,16 @@ with tab_mapa:
                         f"✅ Archivo leído: **{len(pts_kml)} puntos/coordenadas** | "
                         f"**{len(lins_kml)} rutas (LineString)** | **{len(polys_kml)} polígonos (Polygon)**."
                     )
+
+                    # Detección automática y registro de Estaciones Transformadoras (ET) desde el KML
+                    ets_encontradas = [p for p in pts_kml if "et" in str(p["name"]).lower() or "estacion" in str(p["name"]).lower()]
+                    if ets_encontradas:
+                        st.info(f"⚡ Se detectaron **{len(ets_encontradas)} Estaciones Transformadoras (ET)** en el KML.")
+                        if st.button("💾 Guardar / Registrar ETs detectadas en la Base de Datos", type="secondary", key="btn_guardar_ets_kml"):
+                            for et in ets_encontradas:
+                                db_upsert_et(et["name"], et["lat"], et["lon"])
+                            st.toast(f"¡{len(ets_encontradas)} ETs guardadas correctamente en la base de datos!", icon="⚡")
+                            st.rerun()
 
                     # Botón para descargar reporte CSV con todas las coordenadas leídas del KML
                     if pts_kml:
