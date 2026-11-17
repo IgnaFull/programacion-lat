@@ -1843,11 +1843,13 @@ with tab_mapa:
                 if sig == "RES-CCE" and not grp.empty:
                     ult_r = grp.iloc[-1]
                     et_cc_coords = catalogo_ets_actual.get("ET Corrientes Centro", (-27.470142, -58.853417))
+                    lat_puente_salida = -27.481200
+                    lon_puente_salida = -58.834500
                     fig_map.add_trace(go.Scattermap(
-                        lat=[ult_r["latitud"], et_cc_coords[0]],
-                        lon=[ult_r["longitud"], et_cc_coords[1]],
-                        mode="lines", line=dict(width=3, color="#94A3B8"),
-                        name="RES-CCE Subterráneo (Puente -> ET Ctes. Centro)", hoverinfo="skip"
+                        lat=[ult_r["latitud"], lat_puente_salida, et_cc_coords[0]],
+                        lon=[ult_r["longitud"], lon_puente_salida, et_cc_coords[1]],
+                        mode="lines", line=dict(width=3, color="#3B82F6", dash="dot"),
+                        name="RES-CCE Conexión Puente -> ET Ctes. Centro", hoverinfo="skip"
                     ))
 
             if capa_operativa == "Estado Vegetación Vigente (Ciclo Real)":
