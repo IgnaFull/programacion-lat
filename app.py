@@ -6,6 +6,8 @@ import math
 import re
 import sqlite3
 import io
+import zipfile
+import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -358,7 +360,7 @@ def generar_kml_vanos_criticos(df_map, ancho_serv_m, fecha_eval, umbral_critico=
                     f"<b>Longitud Vano:</b> {dist_m:.1f} m<br/>"
                     f"<b>Superficie Franja ({ancho_serv_m:.0f}m):</b> {ha_tot_vano:.3f} ha<br/>"
                     f"<b>Monte Pendiente Estimado:</b> {ha_monte_vano:.3f} ha ({100.0 - pct_v:.1f}% invadido)<br/>"
-                    f"<b>Estado Vigente ({fecha_eval.strftime('%d/%m/%Y')}):</b> {pct_v:.1f}% limpio<br/>"
+                    f"<b>Estado Vigente ({fecha_str}):</b> {pct_v:.1f}% limpio<br/>"
                     f"<b>Vegetación Detectada:</b> {xml_escape(str(r1['tipo_vegetacion']))}<br/>"
                     f"<b>Última Toma Satelital / Limpieza:</b> {xml_escape(str(r1['fecha_limpieza']))}<br/>"
                     f"<b>Estructura Inicio:</b> {xml_escape(str(r1['tipo']))} - {xml_escape(str(r1['estructura']))}"
@@ -394,6 +396,133 @@ def generar_kml_vanos_criticos(df_map, ancho_serv_m, fecha_eval, umbral_critico=
 
     kml_str = "\n".join(kml_parts)
     return kml_str.encode("utf-8"), total_criticos, round(total_ha_monte, 2)
+
+# =============================================================================
+# 2B. PARSER E INTERSECCIÓN GEOMÉTRICA DE KML / KMZ (GOOGLE EARTH PRO)
+# =============================================================================
+def _parse_kml_coords_text(coords_text):
+    """Convierte cadena 'lon,lat,alt lon,lat,alt' de KML a lista de tuplas (lat, lon)."""
+    pts = []
+    if not coords_text:
+        return pts
+    for token in coords_text.strip().split():
+        parts = token.split(",")
+        if len(parts) >= 2:
+            try:
+                lon = float(parts[0])
+                lat = float(parts[1])
+                lat_c, lon_c = corregir_par_lat_lon(lat, lon)
+                pts.append((lat_c, lon_c))
+            except Exception:
+                continue
+    return pts
+
+def parsear_archivo_kml_kmz(file_bytes, filename):
+    """Extrae Placemarks de tipo Point, LineString y Polygon desde un archivo KML o KMZ."""
+    kml_raw = None
+    if filename.lower().endswith(".kmz"):
+        with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as zf:
+            kml_names = [n for n in zf.namelist() if n.lower().endswith(".kml")]
+            if not kml_names:
+                return [], [], []
+            kml_raw = zf.read(kml_names[0])
+    else:
+        kml_raw = file_bytes
+
+    root = ET.fromstring(kml_raw)
+    puntos = []
+    lineas = []
+    poligonos = []
+
+    for elem in root.iter():
+        if elem.tag.endswith("Placemark"):
+            nombre = ""
+            for child in elem:
+                if child.tag.endswith("name") and child.text:
+                    nombre = child.text.strip()
+                    break
+
+            for sub in elem.iter():
+                if sub.tag.endswith("Point"):
+                    for c_el in sub.iter():
+                        if c_el.tag.endswith("coordinates") and c_el.text:
+                            pts = _parse_kml_coords_text(c_el.text)
+                            if pts:
+                                puntos.append({"name": nombre, "lat": pts[0][0], "lon": pts[0][1]})
+                elif sub.tag.endswith("LineString"):
+                    for c_el in sub.iter():
+                        if c_el.tag.endswith("coordinates") and c_el.text:
+                            pts = _parse_kml_coords_text(c_el.text)
+                            if len(pts) >= 2:
+                                lineas.append({"name": nombre, "coords": pts})
+                elif sub.tag.endswith("Polygon"):
+                    for b_el in sub.iter():
+                        if b_el.tag.endswith("outerBoundaryIs"):
+                            for c_el in b_el.iter():
+                                if c_el.tag.endswith("coordinates") and c_el.text:
+                                    pts = _parse_kml_coords_text(c_el.text)
+                                    if len(pts) >= 3:
+                                        poligonos.append({"name": nombre, "coords": pts})
+                            break
+
+    return puntos, lineas, poligonos
+
+def punto_en_poligono(lat, lon, poly_coords):
+    """Algoritmo Ray-Casting para determinar si un punto (lat, lon) cae dentro de un polígono."""
+    inside = False
+    n = len(poly_coords)
+    if n < 3:
+        return False
+    p1_lat, p1_lon = poly_coords[0]
+    for i in range(1, n + 1):
+        p2_lat, p2_lon = poly_coords[i % n]
+        if lon > min(p1_lon, p2_lon):
+            if lon <= max(p1_lon, p2_lon):
+                if lat <= max(p1_lat, p2_lat):
+                    if p1_lon != p2_lon:
+                        xinters = (lon - p1_lon) * (p2_lat - p1_lat) / (p2_lon - p1_lon) + p1_lat
+                    if p1_lat == p2_lat or lat <= xinters:
+                        inside = not inside
+        p1_lat, p1_lon = p2_lat, p2_lon
+    return inside
+
+def distancia_punto_a_segmento_m(plat, plon, alat, alon, blat, blon):
+    """Distancia mínima en metros desde un punto P al segmento geográfico A-B."""
+    cos_lat = math.cos(math.radians(plat))
+    m_per_deg_lat = 111132.0
+    m_per_deg_lon = 111320.0 * cos_lat
+
+    px, py = plon * m_per_deg_lon, plat * m_per_deg_lat
+    ax, ay = alon * m_per_deg_lon, alat * m_per_deg_lat
+    bx, by = blon * m_per_deg_lon, blat * m_per_deg_lat
+
+    dx, dy = bx - ax, by - ay
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq == 0.0:
+        return math.hypot(px - ax, py - ay)
+
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg_len_sq))
+    proj_x = ax + t * dx
+    proj_y = ay + t * dy
+    return math.hypot(px - proj_x, py - proj_y)
+
+def extraer_id_piquete_de_nombre(nombre_str, set_piqs_validos):
+    """Detecta el identificador de piquete desde el título del Placemark de Google Earth."""
+    s = str(nombre_str).strip()
+    if not s:
+        return None
+    if s in set_piqs_validos:
+        return s
+
+    m_piq = re.search(r"(?:piq\.?|piquete)\s*([0-9]+[a-zA-Z]?)", s, flags=re.IGNORECASE)
+    if m_piq and m_piq.group(1) in set_piqs_validos:
+        return m_piq.group(1)
+
+    tokens = re.findall(r"\b([0-9]+[a-zA-Z]?)\b", s)
+    for tok in tokens:
+        if tok in set_piqs_validos:
+            return tok
+    return None
 
 # =============================================================================
 # 3. PERSISTENCIA DE DATOS (PLAN ENRE + GPS PIQUETES + CAMPO REAL)
@@ -1311,7 +1440,7 @@ with tab_indicadores:
 # =============================================================================
 with tab_precosteo:
     st.markdown("### 💰 Precosteo 2026 y Estimación de Hectáreas Reales a Desmontar")
-    st.caption("Modelo indexado a litros equivalentes de gasoil (AEA 95301) con calibración por datos satelitales Sentinel-2, entorno geográfico o edición manual por línea.")
+    st.caption("Modelo indexado a litros equivalentes de gasoil (AEA 95301) con calibración por datos satelitales Sentinel-2 / Google Earth, entorno geográfico o edición manual por línea.")
 
     pct_monte_satelite = {}
     if not df_gps_all.empty:
@@ -1351,7 +1480,7 @@ with tab_precosteo:
             metodo_monte = st.selectbox(
                 "🛰️ Método de Estimación de Hectáreas de Monte:",
                 [
-                    "Datos Reales Satélite Sentinel-2 / Campo (Supabase)",
+                    "Datos Reales Satélite Sentinel-2 / Google Earth (Supabase)",
                     "Calibrado por Entorno Geográfico NEA (Monte vs. Periurbano)",
                     "Supuesto Plano Base Excel (52,5% ref. Zona Norte)"
                 ],
@@ -1496,11 +1625,11 @@ with tab_precosteo:
     )
 
 # =============================================================================
-# PESTAÑA 3: MAPA DE RED (REGIÓN CENTRO + SUBTERRÁNEO + REBROTE + SATÉLITE)
+# PESTAÑA 3: MAPA DE RED (REGIÓN CENTRO + SUBTERRÁNEO + GOOGLE EARTH KML + SATÉLITE)
 # =============================================================================
 with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
-    st.caption("Monitoreo geográfico en tiempo real integrado con Sentinel-2 (NDVI + NDMI + SCL), tramos subterráneos urbanos (ET Ctes. Centro / ET Sarmiento) y rebrote estacional NEA.")
+    st.caption("Monitoreo geográfico en tiempo real integrado con Sentinel-2, Google Earth Pro (KML/KMZ), tramos subterráneos urbanos y rebrote estacional NEA.")
 
     cm1, cm2, cm3, cm4, cm5 = st.columns([1.8, 1.4, 1.8, 1.6, 1.4])
     with cm1:
@@ -1727,12 +1856,183 @@ with tab_mapa:
 
     st.divider()
 
-    subtab_campo, subtab_decl, subtab_imp, subtab_calc = st.tabs([
-        "🚁 Actualización en Vivo (Cuadrilla 1 / Recorrido Dron)",
+    subtab_kml, subtab_campo, subtab_decl, subtab_imp, subtab_calc = st.tabs([
+        "🌍 Importar KML (Google Earth Pro)",
+        "🚁 Actualización en Vivo (Cuadrilla / Dron)",
         "📍 Declarar / Editar Piquete GPS",
         "📥 Importar Excel Piquetes / Desmonte",
         "📐 Calculadora por Tramo (m² y ha)"
     ])
+
+    with subtab_kml:
+        st.markdown("##### 🌍 Importar Correcciones de Google Earth Pro (`.kml` / `.kmz`)")
+        st.caption("Subí un archivo exportado desde Google Earth Pro para corregir coordenadas exactas de piquetes (Marcadores de posición) o actualizar el estado de limpieza de tramos verificados visualmente (Polígonos o Rutas).")
+
+        if df_gps_all.empty:
+            st.info("Cargá primero la base de coordenadas GPS para cruzar archivos de Google Earth Pro.")
+        else:
+            kc1, kc2 = st.columns([1.4, 2.6])
+            with kc1:
+                kml_linea_sel = st.selectbox("⚡ Línea LAT a actualizar:", LINEAS_SIGLAS, key="kml_imp_linea")
+            with kc2:
+                kml_file_up = st.file_uploader("Subir archivo de Google Earth (.kml / .kmz)", type=["kml", "kmz"], key="upl_google_earth_kml")
+
+            if kml_file_up is not None:
+                try:
+                    pts_kml, lins_kml, polys_kml = parsear_archivo_kml_kmz(kml_file_up.read(), kml_file_up.name)
+                    st.success(
+                        f"✅ Archivo leído: **{len(pts_kml)} marcadores (Point)** | "
+                        f"**{len(lins_kml)} rutas (LineString)** | **{len(polys_kml)} polígonos (Polygon)**."
+                    )
+
+                    sub_kml_l = df_gps_all[df_gps_all["linea"] == kml_linea_sel].copy().reset_index(drop=True)
+                    set_piqs_l = set(sub_kml_l["piquete"].astype(str).str.strip().tolist())
+
+                    modo_kml = st.radio(
+                        "Seleccionar acción a aplicar sobre la base de datos:",
+                        [
+                            "📍 Actualizar coordenadas GPS de Piquetes (desde Marcadores de posición)",
+                            "🌲 Marcar tramos verificados visualmente (desde Polígonos o Rutas de Google Earth)"
+                        ],
+                        key="kml_modo_accion"
+                    )
+
+                    if modo_kml.startswith("📍"):
+                        coincidencias = []
+                        for p in pts_kml:
+                            piq_match = extraer_id_piquete_de_nombre(p["name"], set_piqs_l)
+                            if piq_match:
+                                row_orig = sub_kml_l[sub_kml_l["piquete"].astype(str).str.strip() == piq_match].iloc[0]
+                                desv_m = distancia_geodesica_m(row_orig["latitud"], row_orig["longitud"], p["lat"], p["lon"])
+                                coincidencias.append({
+                                    "Piquete": piq_match,
+                                    "Nombre KML": p["name"],
+                                    "Lat Anterior": round(float(row_orig["latitud"]), 6),
+                                    "Lon Anterior": round(float(row_orig["longitud"]), 6),
+                                    "Lat Nueva (GE)": round(p["lat"], 6),
+                                    "Lon Nueva (GE)": round(p["lon"], 6),
+                                    "Desplazamiento (m)": round(desv_m, 2),
+                                    "_row": row_orig
+                                })
+
+                        if not coincidencias:
+                            st.warning(f"Ningún marcador del KML coincide con los números de piquete de **{kml_linea_sel}** (nombrá cada pin como `1`, `45`, `Piq. 111b`, etc. en Google Earth).")
+                        else:
+                            df_prev_pts = pd.DataFrame([{k: v for k, v in c.items() if k != "_row"} for c in coincidencias])
+                            st.dataframe(df_prev_pts, use_container_width=True, hide_index=True)
+
+                            if st.button(f"💾 Aplicar {len(coincidencias)} Coordenadas Corregidas en {kml_linea_sel}", type="primary", use_container_width=True, key="btn_apply_kml_pts"):
+                                recs_gps = []
+                                for c in coincidencias:
+                                    r_o = c["_row"]
+                                    recs_gps.append({
+                                        "linea": kml_linea_sel,
+                                        "piquete": str(c["Piquete"]).strip(),
+                                        "orden": int(r_o["orden"]),
+                                        "latitud": float(c["Lat Nueva (GE)"]),
+                                        "longitud": float(c["Lon Nueva (GE)"]),
+                                        "dist_km": float(r_o["dist_km"] or 0.0),
+                                        "tipo": str(r_o["tipo"] or ""),
+                                        "estructura": str(r_o["estructura"] or ""),
+                                        "pct_desmonte": float(r_o["pct_desmonte"] or 0.0),
+                                        "fecha_limpieza": str(r_o["fecha_limpieza"] or str(date.today())),
+                                        "tipo_vegetacion": str(r_o["tipo_vegetacion"] or "Monte Nativo / Chilcal")
+                                    })
+                                db_upsert_gps_batch(recs_gps)
+                                st.toast(f"¡{len(recs_gps)} piquetes georreferenciados actualizados desde Google Earth!", icon="🌍")
+                                st.rerun()
+
+                    else:
+                        if not polys_kml and not lins_kml:
+                            st.warning("El archivo KML no contiene Polígonos ni Rutas. Dibujá un Polígono alrededor de la zona de monte o una Ruta sobre el tramo despejado en Google Earth Pro.")
+                        else:
+                            ka1, ka2, ka3, ka4 = st.columns([1.4, 1.4, 1.8, 1.4])
+                            with ka1:
+                                kml_pct_limpio = st.number_input(
+                                    "✅ % Limpio Verificado:",
+                                    min_value=0.0, max_value=100.0, value=0.0, step=5.0,
+                                    help="0% = Monte crítico confirmado (100% a desmontar) | 100% = Electroducto despejado / pastizal.",
+                                    key="kml_pct_verif"
+                                )
+                            with ka2:
+                                kml_fecha_verif = st.date_input("📅 Fecha Imagen / Verif.:", value=date.today(), format="DD/MM/YYYY", key="kml_fec_verif")
+                            with ka3:
+                                kml_veg_verif = st.selectbox("🌿 Tipo Cobertura:", list(CICLOS_VEGETACION_DIAS.keys()), key="kml_veg_verif")
+                            with ka4:
+                                kml_radio_m = st.number_input("Radio captura ruta (m):", min_value=10.0, max_value=150.0, value=35.0, step=5.0, key="kml_radio_m")
+
+                            vanos_afectados_kml = {}
+                            detalles_vanos = []
+                            for i in range(len(sub_kml_l) - 1):
+                                r1 = sub_kml_l.iloc[i]
+                                r2 = sub_kml_l.iloc[i + 1]
+                                sin_desm, _ = es_tramo_sin_desmonte(kml_linea_sel, r1["piquete"], r2["piquete"])
+                                if sin_desm:
+                                    continue
+
+                                lat1, lon1 = float(r1["latitud"]), float(r1["longitud"])
+                                lat2, lon2 = float(r2["latitud"]), float(r2["longitud"])
+                                mid_lat, mid_lon = (lat1 + lat2) / 2.0, (lon1 + lon2) / 2.0
+
+                                hit = False
+                                origen_hit = ""
+                                for poly in polys_kml:
+                                    if (
+                                        punto_en_poligono(mid_lat, mid_lon, poly["coords"])
+                                        or punto_en_poligono(lat1, lon1, poly["coords"])
+                                        or punto_en_poligono(lat2, lon2, poly["coords"])
+                                    ):
+                                        hit = True
+                                        origen_hit = f"Polígono: {poly['name'] or 'Sin nombre'}"
+                                        break
+
+                                if not hit:
+                                    for lin in lins_kml:
+                                        coords_l = lin["coords"]
+                                        for j in range(len(coords_l) - 1):
+                                            d_seg = distancia_punto_a_segmento_m(
+                                                mid_lat, mid_lon,
+                                                coords_l[j][0], coords_l[j][1],
+                                                coords_l[j+1][0], coords_l[j+1][1]
+                                            )
+                                            if d_seg <= kml_radio_m:
+                                                hit = True
+                                                origen_hit = f"Ruta: {lin['name'] or 'Sin nombre'}"
+                                                break
+                                        if hit:
+                                            break
+
+                                if hit:
+                                    piq_s = str(r1["piquete"]).strip()
+                                    vanos_afectados_kml[piq_s] = float(kml_pct_limpio)
+                                    dm_v = distancia_geodesica_m(lat1, lon1, lat2, lon2)
+                                    detalles_vanos.append({
+                                        "Vano": f"{piq_s} -> {r2['piquete']}",
+                                        "Longitud (m)": round(dm_v, 1),
+                                        "Ha Franja": round((dm_v * ancho_serv_sel) / 10000.0, 3),
+                                        "Geometría KML": origen_hit,
+                                        "Nuevo % Limpio": f"{kml_pct_limpio:.0f}%"
+                                    })
+
+                            if not vanos_afectados_kml:
+                                st.warning(f"Las geometrías del KML no interceptan vanos de **{kml_linea_sel}**. Verificá haber seleccionado la línea correcta o ampliá el radio de captura.")
+                            else:
+                                ha_tot_kml = sum(d["Ha Franja"] for d in detalles_vanos)
+                                st.info(f"🎯 Se detectaron **{len(detalles_vanos)} vanos** intersectados por el KML (**{ha_tot_kml:.2f} ha** de franja).")
+                                st.dataframe(pd.DataFrame(detalles_vanos), use_container_width=True, hide_index=True, height=230)
+
+                                if st.button(f"💾 Guardar Verificación Visual en {len(detalles_vanos)} Vanos", type="primary", use_container_width=True, key="btn_apply_kml_tramos"):
+                                    cant_k = db_update_pct_desmonte_linea(
+                                        kml_linea_sel,
+                                        vanos_afectados_kml,
+                                        fecha_relev=kml_fecha_verif,
+                                        tipo_veg=kml_veg_verif
+                                    )
+                                    st.toast(f"¡{cant_k} vanos calibrados con Google Earth Pro en {kml_linea_sel}!", icon="🌍")
+                                    st.rerun()
+
+                except Exception as e_kml:
+                    st.error(f"Error procesando archivo KML/KMZ: {e_kml}")
 
     with subtab_campo:
         st.markdown("##### 🚁 Calibración en Vivo de Vegetación por Tramo (Recorrido Dron / Visual / Desmonte)")
