@@ -306,12 +306,15 @@ def generar_kml_vanos_criticos(df_map, ancho_serv_m, fecha_eval, umbral_critico=
     Genera un archivo KML listo para abrir en Google Earth Pro con los vanos aéreos marcados
     como críticos (< umbral_critico% limpio), agrupados por carpeta de Línea LAT.
     """
+    fecha_str = fecha_eval.strftime("%d/%m/%Y")
+    doc_title = xml_escape(f"TRANSNEA - Vanos Críticos Monte (<{umbral_critico:.0f}% limpio) - {fecha_str}")
+    doc_desc = xml_escape(f"Auditoría satelital Sentinel-2 | Franja AEA 95301 ({ancho_serv_m:.0f}m) | Región Centro")
     kml_parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<kml xmlns="http://www.opengis.net/kml/2.2">',
         '  <Document>',
-        f'    <name>{xml_escape(f"TRANSNEA - Vanos Críticos Monte (<{umbral_critico:.0f}% limpio) - {fecha_eval.strftime(\"%d/%m/%Y\")}")}</name>',
-        f'    <description>{xml_escape(f"Auditoría satelital Sentinel-2 | Franja AEA 95301 ({ancho_serv_m:.0f}m) | Región Centro")}</description>',
+        f'    <name>{doc_title}</name>',
+        f'    <description>{doc_desc}</description>',
         '    <Style id="estiloVanoCritico">',
         '      <LineStyle>',
         '        <color>ff2626dc</color>',
