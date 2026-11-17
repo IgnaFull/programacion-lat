@@ -1897,11 +1897,9 @@ with tab_mapa:
                     mode="lines", line=dict(width=4, color=color_linea),
                     name=f"LAT {sig}", hoverinfo="skip"
                 ))
-               if sig == "RES-CCE" and not grp.empty:
+                if sig == "RES-CCE" and not grp.empty:
                     ult_r = grp.iloc[-1]
                     et_cc_coords = catalogo_ets_actual.get("ET Corrientes Centro", (-27.470142, -58.853417))
-                    
-                    # Waypoints intermedios siguiendo la bajada del puente y la traza vial hacia ET Ctes Centro
                     lat_bajada_puente = -27.478900
                     lon_bajada_puente = -58.838500
                     lat_costanera = -27.474500
