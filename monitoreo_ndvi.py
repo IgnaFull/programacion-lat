@@ -40,15 +40,15 @@ LINEAS_REGION_CENTRO = [
 ]
 
 # Clases SCL Sentinel-2 L2A:
-# 4 = Vegetación, 5 = Suelo desnudo / despejado, 6 = Agua, 3/8/9/10 = Sombras y Nubes
+# 4 = Vegetación, 5 = Suelo desnudo / despejado, 6 = Agua, 2/3/8/9/10 = Sombras y Nubes
 SCL_VALIDOS_TIERRA = [4, 5]
 SCL_NUBES_SOMBRAS = [2, 3, 8, 9, 10]
 
 to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32721", always_xy=True).transform
 
 
-def leer_banda_alineada(src, geom_raster, ref_transform, ref_shape, ref_crs):
-    """Recorta una banda (20m como SCL o SWIR1) y la alinea exactamente a la grilla 10m de Red/NIR."""
+def leer_banda_alineada(src, ref_transform, ref_shape, ref_crs):
+    """Reproyecta una banda de 20m (SCL o SWIR1) a la grilla exacta de 10m de Red/NIR."""
     dst_arr = np.zeros(ref_shape, dtype=np.float32)
     try:
         reproject(
@@ -78,13 +78,12 @@ def evaluar_corredor_espectral(red_arr, nir_arr, swir_arr, scl_arr, veg_actual):
     agua_px = int(np.sum(scl_arr == 6))
     frac_nubes = nubes_px / float(total_px)
 
-    # Si más del 50% del vano está cubierto por nubes o sombras, no pisar el dato histórico
+    # Si más del 50% del vano está cubierto por nubes o sombras, conservar dato histórico
     if frac_nubes > 0.50:
         return None, veg_actual, frac_nubes
 
     mask_valid = np.isin(scl_arr, SCL_VALIDOS_TIERRA) & (red_arr > 0) & (nir_arr > 0)
     if int(np.sum(mask_valid)) == 0:
-        # Si todo el vano es agua (ej. cruce de río o estero inundado)
         if agua_px > (total_px * 0.5):
             return 100.0, "Bañado / Estero / Juncal", frac_nubes
         return None, veg_actual, frac_nubes
@@ -97,32 +96,28 @@ def evaluar_corredor_espectral(red_arr, nir_arr, swir_arr, scl_arr, veg_actual):
     ndvi = (n - r) / (n + r + 1e-6)
     ndmi = np.where(s > 0, (n - s) / (n + s + 1e-6), 0.0)
 
-    # Clasificación por píxel:
     # 1. Despejado / Suelo desnudo (SCL=5 o NDVI <= 0.28) -> 100% limpio
     es_limpio = (scl_v == 5) | (ndvi <= 0.28)
 
     # 2. Monte alto / Leñoso denso (NDVI > 0.52 y NDMI > 0.18, o NDVI > 0.62) -> Crítico (0% a 35% limpio)
     es_monte_alto = (~es_limpio) & (((ndvi > 0.52) & (ndmi > 0.18)) | (ndvi > 0.62))
 
-    # 3. Pastizal / Herbáceo / Rebrote bajo (el resto de vegetación con baja estructura leñosa) -> 75% a 90% limpio
+    # 3. Pastizal / Herbáceo / Rebrote bajo -> 75% a 90% limpio
     es_pastizal = (~es_limpio) & (~es_monte_alto)
 
     scores_px = np.zeros_like(ndvi, dtype=np.float32)
     scores_px[es_limpio] = 100.0
 
-    # Para pastizales: interpolación suave entre 90% (NDVI=0.28) y 75% (NDVI=0.62)
     if np.any(es_pastizal):
         ndvi_p = np.clip(ndvi[es_pastizal], 0.28, 0.62)
         scores_px[es_pastizal] = 90.0 - ((ndvi_p - 0.28) / 0.34) * 15.0
 
-    # Para monte alto: interpolación entre 35% (NDVI=0.52) y 0% (NDVI >= 0.75)
     if np.any(es_monte_alto):
         ndvi_m = np.clip(ndvi[es_monte_alto], 0.52, 0.75)
         scores_px[es_monte_alto] = np.maximum(0.0, 35.0 * (1.0 - (ndvi_m - 0.52) / 0.23))
 
     pct_limpio_medio = round(float(np.mean(scores_px)), 1)
 
-    # Determinar tipo de vegetación dominante del vano para el modelo de rebrote cíclico
     prop_monte = float(np.mean(es_monte_alto))
     prop_pastizal = float(np.mean(es_pastizal))
 
@@ -194,6 +189,30 @@ def analizar_linea_sentinel2(sigla_linea, dias_atras=45, max_nubes=25):
             p1 = df.iloc[i]
             p2 = df.iloc[i + 1]
 
+            p1_id = str(p1["piquete"]).strip()
+            p2_id = str(p2["piquete"]).strip()
+
+            # Omitir tramos sin servidumbre terrestre (Cruce Río Paraná y Cable Subterráneo Corrientes)
+            es_subt_o_rio = (
+                (sigla_linea in ["RES-CCE", "RES-SCA"] and p1_id in ["94", "95"] and p2_id in ["95", "96"])
+                or (sigla_linea == "RES-SCA" and p1_id == "96" and p2_id == "101")
+            )
+            if es_subt_o_rio:
+                actualizaciones.append({
+                    "linea": str(p1["linea"]),
+                    "piquete": p1_id,
+                    "orden": int(p1["orden"]),
+                    "latitud": float(p1["latitud"]),
+                    "longitud": float(p1["longitud"]),
+                    "dist_km": float(p1.get("dist_km") or 0.0),
+                    "tipo": str(p1.get("tipo") or ""),
+                    "estructura": str(p1.get("estructura") or ""),
+                    "pct_desmonte": 100.0,
+                    "fecha_limpieza": fecha_imagen,
+                    "tipo_vegetacion": "Pastizal / Campo Abierto",
+                })
+                continue
+
             pct_previo = float(p1.get("pct_desmonte") or 0.0)
             fecha_previa = str(p1.get("fecha_limpieza") or fecha_imagen)
             veg_previa = str(p1.get("tipo_vegetacion") or "Monte Nativo / Chilcal")
@@ -216,13 +235,13 @@ def analizar_linea_sentinel2(sigla_linea, dias_atras=45, max_nubes=25):
                 valid_geom_mask = red_22[0] > 0
 
                 if src_scl is not None:
-                    scl_grid = leer_banda_alineada(src_scl, franja_22m_raster, out_trans, ref_shape, src_red.crs)
+                    scl_grid = leer_banda_alineada(src_scl, out_trans, ref_shape, src_red.crs)
                     scl_22 = scl_grid[valid_geom_mask].astype(int) if scl_grid is not None else np.full(np.sum(valid_geom_mask), 4)
                 else:
                     scl_22 = np.full(np.sum(valid_geom_mask), 4)
 
                 if src_swir is not None:
-                    swir_grid = leer_banda_alineada(src_swir, franja_22m_raster, out_trans, ref_shape, src_red.crs)
+                    swir_grid = leer_banda_alineada(src_swir, out_trans, ref_shape, src_red.crs)
                     swir_22 = swir_grid[valid_geom_mask] if swir_grid is not None else None
                 else:
                     swir_22 = None
@@ -230,7 +249,7 @@ def analizar_linea_sentinel2(sigla_linea, dias_atras=45, max_nubes=25):
                 r_22_vec = red_22[0][valid_geom_mask].astype(float)
                 n_22_vec = nir_22[0][valid_geom_mask].astype(float)
 
-                pct_22, veg_22, frac_nubes = evaluar_corredor_espectral(r_22_vec, n_22_vec, swir_22, scl_22, veg_previa)
+                pct_22, veg_22, _ = evaluar_corredor_espectral(r_22_vec, n_22_vec, swir_22, scl_22, veg_previa)
 
                 # Evaluar también corredor central de 10m (eje conductores)
                 red_10, out_trans_10 = mask(src_red, [franja_10m_raster], crop=True, filled=True, nodata=0)
@@ -238,13 +257,13 @@ def analizar_linea_sentinel2(sigla_linea, dias_atras=45, max_nubes=25):
                 valid_10 = red_10[0] > 0
 
                 if src_scl is not None and np.any(valid_10):
-                    scl_g10 = leer_banda_alineada(src_scl, franja_10m_raster, out_trans_10, red_10[0].shape, src_red.crs)
+                    scl_g10 = leer_banda_alineada(src_scl, out_trans_10, red_10[0].shape, src_red.crs)
                     scl_10 = scl_g10[valid_10].astype(int) if scl_g10 is not None else np.full(np.sum(valid_10), 4)
                 else:
                     scl_10 = np.full(np.sum(valid_10), 4)
 
                 if src_swir is not None and np.any(valid_10):
-                    swir_g10 = leer_banda_alineada(src_swir, franja_10m_raster, out_trans_10, red_10[0].shape, src_red.crs)
+                    swir_g10 = leer_banda_alineada(src_swir, out_trans_10, red_10[0].shape, src_red.crs)
                     swir_10 = swir_g10[valid_10] if swir_g10 is not None else None
                 else:
                     swir_10 = None
@@ -258,13 +277,11 @@ def analizar_linea_sentinel2(sigla_linea, dias_atras=45, max_nubes=25):
                 )
 
                 if pct_22 is None:
-                    # Vano cubierto por nube/sombra: conservar lectura previa
                     vanos_omitidos_nubes += 1
                     pct_final = pct_previo
                     fecha_final = fecha_previa
                     veg_final = veg_previa
                 else:
-                    # Ponderación: 70% corredor central de conductores (10m) + 30% franja total (22m)
                     if pct_10 is not None:
                         pct_final = round(0.70 * pct_10 + 0.30 * pct_22, 1)
                         veg_final = veg_10
@@ -280,7 +297,7 @@ def analizar_linea_sentinel2(sigla_linea, dias_atras=45, max_nubes=25):
 
             actualizaciones.append({
                 "linea": str(p1["linea"]),
-                "piquete": str(p1["piquete"]),
+                "piquete": p1_id,
                 "orden": int(p1["orden"]),
                 "latitud": float(p1["latitud"]),
                 "longitud": float(p1["longitud"]),
