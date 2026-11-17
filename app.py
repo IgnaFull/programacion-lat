@@ -77,11 +77,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO, AEA 95301 Y PRECOSTEO
+# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO, ESTACIONES TRANSFORMADORAS Y PRECOSTEO
 # =============================================================================
 ANCHO_FRANJA_M = 22.0  # 11m izquierda + 11m derecha desde hilo de guardia (AEA 95301)
 FACTOR_HA_POR_KM = ANCHO_FRANJA_M * 1000.0 / 10000.0  # 2.2 ha por cada km lineal
-COORD_ET_CCE = (-27.470142, -58.853417)  # Estación Transformadora Corrientes Centro
+
+CATALOGO_ETS = {
+    "ET Resistencia": (-27.301114, -59.107262),
+    "ET Corrientes Centro": (-27.470142, -58.853417),
+    "ET Santa Catalina": (-27.438500, -58.785000),
+    "ET Barranqueras 1": (-27.785000, -58.955000),
+    "ET Barranqueras 2": (-27.795000, -58.965000),
+    "ET Bella Vista": (-28.512000, -59.048000),
+    "ET Goya": (-29.145000, -59.265000),
+    "ET La Leonesa": (-27.052000, -58.705000),
+    "ET General Mansilla": (-25.980000, -58.950000),
+    "ET El Colorado": (-26.310000, -59.385000),
+    "ET Gral. San Martín": (-26.540000, -59.360000),
+    "ET Paso de la Patria": (-27.315000, -58.575000),
+    "ET Sarmiento": (-27.475000, -58.845000),
+}
 
 CATALOGO_LAT = {
     "ECO-SMA": {"tramo": "El Colorado (Formosa) / San Martín (Chaco)", "km": 30.47, "piquetes": 126, "color": "#E11D48"},
@@ -113,9 +128,9 @@ INVENTARIO_PRECOSTEO_BASE = [
 ]
 
 CICLOS_VEGETACION_DIAS = {
-    "Monte Nativo / Chilcal": 420,      # ~14 meses
-    "Bañado / Estero / Juncal": 540,    # ~18 meses
-    "Pastizal / Campo Abierto": 900,    # ~30 meses
+    "Monte Nativo / Chilcal": 420,
+    "Bañado / Estero / Juncal": 540,
+    "Pastizal / Campo Abierto": 900,
 }
 
 LINEAS_SIGLAS = list(CATALOGO_LAT.keys())
@@ -157,7 +172,6 @@ MESES_ES = {
 }
 
 def natural_piq_key(piq_str):
-    """Ordena piquetes numéricamente manteniendo intercalados en su lugar (ej: 111 -> 111b -> 112)."""
     s = str(piq_str).strip()
     m = re.match(r"^(\d+)(.*)$", s)
     if m:
@@ -182,7 +196,6 @@ def normalizar_sigla_lat(nombre):
     return equivalencias.get(s, s)
 
 def es_tramo_sin_desmonte(sigla_lat, piq_ini_str, piq_fin_str):
-    """Identifica tramos subterráneos urbanos o cruce de río sin franja de desmonte."""
     p1 = str(piq_ini_str).strip()
     p2 = str(piq_fin_str).strip()
     if sigla_lat in ["RES-CCE", "RES-SCA"]:
@@ -193,7 +206,6 @@ def es_tramo_sin_desmonte(sigla_lat, piq_ini_str, piq_fin_str):
     return False, "Tramo Aéreo"
 
 def distancia_geodesica_m(lat1, lon1, lat2, lon2):
-    """Fórmula geodésica esférica idéntica a la hoja Auxiliar Distancia (en metros)."""
     try:
         r1 = math.radians(90.0 - float(lat1))
         r2 = math.radians(90.0 - float(lat2))
@@ -205,7 +217,6 @@ def distancia_geodesica_m(lat1, lon1, lat2, lon2):
         return 0.0
 
 def corregir_par_lat_lon(lat_val, lon_val):
-    """En NEA Argentina: Latitud está entre -22 y -32; Longitud está entre -54 y -63."""
     lat = float(lat_val)
     lon = float(lon_val)
     if lat < -45.0 and lon > -45.0:
@@ -213,7 +224,6 @@ def corregir_par_lat_lon(lat_val, lon_val):
     return lat, lon
 
 def calcular_limpieza_vigente(pct_base, fecha_limp_str, tipo_veg, fecha_objetivo):
-    """Calcula el % vigente de limpieza descontando el rebrote cíclico estacional NEA."""
     pct_ini = float(pct_base or 0.0)
     if pct_ini <= 0.0:
         return 0.0
@@ -304,10 +314,6 @@ def crear_grafico_torta(titulo, ejecutado, total, unidad, color_ejec):
     return fig
 
 def generar_kml_vanos_criticos(df_map, ancho_serv_m, fecha_eval, umbral_critico=30.0):
-    """
-    Genera un archivo KML listo para abrir en Google Earth Pro con los vanos aéreos marcados
-    como críticos (< umbral_critico% limpio), agrupados por carpeta de Línea LAT.
-    """
     fecha_str = fecha_eval.strftime("%d/%m/%Y")
     doc_title = xml_escape(f"TRANSNEA - Vanos Críticos Monte (<{umbral_critico:.0f}% limpio) - {fecha_str}")
     doc_desc = xml_escape(f"Auditoría satelital Sentinel-2 | Franja AEA 95301 ({ancho_serv_m:.0f}m) | Región Centro")
@@ -401,7 +407,6 @@ def generar_kml_vanos_criticos(df_map, ancho_serv_m, fecha_eval, umbral_critico=
 # 2B. PARSER E INTERSECCIÓN GEOMÉTRICA DE KML / KMZ (GOOGLE EARTH PRO)
 # =============================================================================
 def _parse_kml_coords_text(coords_text):
-    """Convierte cadena 'lon,lat,alt lon,lat,alt' de KML a lista de tuplas (lat, lon)."""
     pts = []
     if not coords_text:
         return pts
@@ -418,7 +423,6 @@ def _parse_kml_coords_text(coords_text):
     return pts
 
 def parsear_archivo_kml_kmz(file_bytes, filename):
-    """Extrae Placemarks de tipo Point, LineString y Polygon desde un archivo KML o KMZ."""
     kml_raw = None
     if filename.lower().endswith(".kmz"):
         with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as zf:
@@ -468,7 +472,6 @@ def parsear_archivo_kml_kmz(file_bytes, filename):
     return puntos, lineas, poligonos
 
 def punto_en_poligono(lat, lon, poly_coords):
-    """Algoritmo Ray-Casting para determinar si un punto (lat, lon) cae dentro de un polígono."""
     inside = False
     n = len(poly_coords)
     if n < 3:
@@ -487,7 +490,6 @@ def punto_en_poligono(lat, lon, poly_coords):
     return inside
 
 def distancia_punto_a_segmento_m(plat, plon, alat, alon, blat, blon):
-    """Distancia mínima en metros desde un punto P al segmento geográfico A-B."""
     cos_lat = math.cos(math.radians(plat))
     m_per_deg_lat = 111132.0
     m_per_deg_lon = 111320.0 * cos_lat
@@ -507,14 +509,13 @@ def distancia_punto_a_segmento_m(plat, plon, alat, alon, blat, blon):
     return math.hypot(px - proj_x, py - proj_y)
 
 def extraer_id_piquete_de_nombre(nombre_str, set_piqs_validos):
-    """Detecta el identificador de piquete desde el título del Placemark de Google Earth."""
     s = str(nombre_str).strip()
     if not s:
         return None
     if s in set_piqs_validos:
         return s
 
-    m_piq = re.search(r"(?:piq\.?|piquete)\s*([0-9]+[a-zA-Z]?)", s, flags=re.IGNORECASE)
+    m_piq = re.search(r"(?:piq\.?|piquete|id)\s*([0-9]+[a-zA-Z]?)", s, flags=re.IGNORECASE)
     if m_piq and m_piq.group(1) in set_piqs_validos:
         return m_piq.group(1)
 
@@ -525,7 +526,7 @@ def extraer_id_piquete_de_nombre(nombre_str, set_piqs_validos):
     return None
 
 # =============================================================================
-# 3. PERSISTENCIA DE DATOS (PLAN ENRE + GPS PIQUETES + CAMPO REAL)
+# 3. PERSISTENCIA DE DATOS
 # =============================================================================
 @st.cache_resource
 def init_supabase():
@@ -665,7 +666,7 @@ def db_upsert_gps_batch(records):
             return
         except Exception as e:
             if "fecha_limpieza" in str(e) or "tipo_vegetacion" in str(e):
-                st.warning("⚠️ Ejecutá el script `ALTER TABLE public.piquetes_gps...` en Supabase para habilitar el guardado de fechas y tipo de vegetación.")
+                st.warning("⚠️ Ejecutá el script de migración en Supabase para habilitar fechas y tipo de vegetación.")
                 recs_fallback = [{k: v for k, v in r.items() if k not in ["fecha_limpieza", "tipo_vegetacion"]} for r in records]
                 for i in range(0, len(recs_fallback), 500):
                     sb_client.table("piquetes_gps").upsert(recs_fallback[i:i+500], on_conflict="linea,piquete").execute()
@@ -866,7 +867,7 @@ def db_vaciar_plan_completo():
     conn.close()
 
 # =============================================================================
-# 4. GENERADORES DE INFORMES DE AUDITORÍA ENRE Y PRECOSTEO (PDF Y EXCEL)
+# 4. GENERADORES DE INFORMES (PDF Y EXCEL)
 # =============================================================================
 def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt):
     if not REPORTLAB_AVAILABLE:
@@ -1224,7 +1225,7 @@ tab_indicadores, tab_precosteo, tab_mapa, tab_cronograma, tab_cargar, tab_gestio
 ])
 
 # =============================================================================
-# PESTAÑA 1: INDICADORES, DIAGRAMAS DE TORTA Y BARRAS INTEGRANDO DATOS REALES
+# PESTAÑA 1: INDICADORES Y AUDITORÍA ENRE
 # =============================================================================
 with tab_indicadores:
     df_anio = df_raw[df_raw["anio"] == anio_sel].copy() if not df_raw.empty else pd.DataFrame(columns=df_raw.columns)
@@ -1436,7 +1437,7 @@ with tab_indicadores:
             st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
 
 # =============================================================================
-# PESTAÑA 2: PRECOSTEO Y ESTIMACIÓN DE HECTÁREAS REALES DE MONTE (2026)
+# PESTAÑA 2: PRECOSTEO Y MONTE REAL
 # =============================================================================
 with tab_precosteo:
     st.markdown("### 💰 Precosteo 2026 y Estimación de Hectáreas Reales a Desmontar")
@@ -1625,11 +1626,11 @@ with tab_precosteo:
     )
 
 # =============================================================================
-# PESTAÑA 3: MAPA DE RED (REGIÓN CENTRO + SUBTERRÁNEO + GOOGLE EARTH KML + SATÉLITE)
+# PESTAÑA 3: MAPA DE RED (REGIÓN CENTRO + ESTACIONES TRANSFORMADORAS + KML)
 # =============================================================================
 with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
-    st.caption("Monitoreo geográfico en tiempo real integrado con Sentinel-2, Google Earth Pro (KML/KMZ), tramos subterráneos urbanos y rebrote estacional NEA.")
+    st.caption("Monitoreo geográfico en tiempo real integrado con Sentinel-2, Google Earth Pro (KML/KMZ), Estaciones Transformadoras (ET) y rebrote estacional NEA.")
 
     cm1, cm2, cm3, cm4, cm5 = st.columns([1.8, 1.4, 1.8, 1.6, 1.4])
     with cm1:
@@ -1785,8 +1786,8 @@ with tab_mapa:
                 if sig == "RES-CCE" and not grp.empty:
                     ult_r = grp.iloc[-1]
                     fig_map.add_trace(go.Scattermap(
-                        lat=[ult_r["latitud"], COORD_ET_CCE[0]],
-                        lon=[ult_r["longitud"], COORD_ET_CCE[1]],
+                        lat=[ult_r["latitud"], CATALOGO_ETS["ET Corrientes Centro"][0]],
+                        lon=[ult_r["longitud"], CATALOGO_ETS["ET Corrientes Centro"][1]],
                         mode="lines", line=dict(width=3, color="#94A3B8"),
                         name="RES-CCE Subterráneo (Puente -> ET Ctes. Centro)", hoverinfo="skip"
                     ))
@@ -1814,6 +1815,23 @@ with tab_mapa:
                 showlegend=False
             ))
 
+        # Agregar Estaciones Transformadoras (ET) al mapa
+        et_lats = [coords[0] for coords in CATALOGO_ETS.values()]
+        et_lons = [coords[1] for coords in CATALOGO_ETS.values()]
+        et_names = list(CATALOGO_ETS.keys())
+
+        fig_map.add_trace(go.Scattermap(
+            lat=et_lats,
+            lon=et_lons,
+            mode="markers+text",
+            marker=dict(size=12, color="#F59E0B", symbol="square"),
+            text=et_names,
+            textposition="top right",
+            textfont=dict(color="#FDE68A", size=11),
+            name="Estaciones Transformadoras (ET)",
+            hovertemplate="<b>%{text}</b><br>Lat: %{lat:.6f}<br>Lon: %{lon:.6f}<extra></extra>"
+        ))
+
         centro_lat = float(df_map["latitud"].mean())
         centro_lon = float(df_map["longitud"].mean())
         zoom_val = 7.2 if mapa_linea_sel.startswith("TODAS") else 9.5
@@ -1833,7 +1851,6 @@ with tab_mapa:
         )
         st.plotly_chart(fig_map, use_container_width=True, key="mapa_red_region_centro")
 
-        # Exportación KML de tramos críticos para auditoría en Google Earth Pro
         kml_bytes, n_criticos, ha_criticas = generar_kml_vanos_criticos(df_map, ancho_serv_sel, fecha_evaluacion, umbral_critico=30.0)
         scope_tag = "Region_Centro" if mapa_linea_sel.startswith("TODAS") else mapa_linea_sel
         ck1, ck2 = st.columns([2.2, 1.8])
@@ -1944,14 +1961,14 @@ with tab_mapa:
 
                     else:
                         if not polys_kml and not lins_kml:
-                            st.warning("El archivo KML no contiene Polígonos ni Rutas. Dibujá un Polígono alrededor de la zona de monte o una Ruta sobre el tramo despejado en Google Earth Pro.")
+                            st.warning("El archivo KML no contiene Polígonos ni Rutas.")
                         else:
                             ka1, ka2, ka3, ka4 = st.columns([1.4, 1.4, 1.8, 1.4])
                             with ka1:
                                 kml_pct_limpio = st.number_input(
                                     "✅ % Limpio Verificado:",
                                     min_value=0.0, max_value=100.0, value=0.0, step=5.0,
-                                    help="0% = Monte crítico confirmado (100% a desmontar) | 100% = Electroducto despejado / pastizal.",
+                                    help="0% = Monte crítico confirmado | 100% = Despejado.",
                                     key="kml_pct_verif"
                                 )
                             with ka2:
@@ -2015,10 +2032,10 @@ with tab_mapa:
                                     })
 
                             if not vanos_afectados_kml:
-                                st.warning(f"Las geometrías del KML no interceptan vanos de **{kml_linea_sel}**. Verificá haber seleccionado la línea correcta o ampliá el radio de captura.")
+                                st.warning(f"Las geometrías del KML no interceptan vanos de **{kml_linea_sel}**.")
                             else:
                                 ha_tot_kml = sum(d["Ha Franja"] for d in detalles_vanos)
-                                st.info(f"🎯 Se detectaron **{len(detalles_vanos)} vanos** intersectados por el KML (**{ha_tot_kml:.2f} ha** de franja).")
+                                st.info(f"🎯 Se detectaron **{len(detalles_vanos)} vanos** intersectados por el KML (**{ha_tot_kml:.2f} ha**).")
                                 st.dataframe(pd.DataFrame(detalles_vanos), use_container_width=True, hide_index=True, height=230)
 
                                 if st.button(f"💾 Guardar Verificación Visual en {len(detalles_vanos)} Vanos", type="primary", use_container_width=True, key="btn_apply_kml_tramos"):
@@ -2036,7 +2053,6 @@ with tab_mapa:
 
     with subtab_campo:
         st.markdown("##### 🚁 Calibración en Vivo de Vegetación por Tramo (Recorrido Dron / Visual / Desmonte)")
-        st.caption("Usá este panel cuando la Cuadrilla 1 termina un tramo o cuando la Cuadrilla 4 (Recorrido Lento / Rápido / Dron) releva el estado real de rebrote.")
         if df_gps_all.empty:
             st.info("Cargá primero las coordenadas GPS para habilitar la actualización por tramo.")
         else:
@@ -2067,7 +2083,7 @@ with tab_mapa:
                         i1, i2 = i2, i1
                     piqs_afectados = {str(piqs_rt[k]).strip(): float(rt_pct) for k in range(i1, i2 + 1)}
                     cant_upd = db_update_pct_desmonte_linea(rt_linea, piqs_afectados, fecha_relev=rt_fecha, tipo_veg=rt_veg)
-                    st.toast(f"¡{cant_upd} piquetes actualizados en {rt_linea} con fecha {rt_fecha.strftime('%d/%m/%Y')}!", icon="🛰️")
+                    st.toast(f"¡{cant_upd} piquetes actualizados en {rt_linea}!", icon="🛰️")
                     st.rerun()
 
     with subtab_decl:
@@ -2099,17 +2115,6 @@ with tab_mapa:
             with dc10:
                 d_veg = st.selectbox("Vegetación del Entorno", list(CICLOS_VEGETACION_DIAS.keys()), key="decl_veg")
 
-            dist_calc_km = 0.0
-            if not df_gps_all.empty:
-                sub_prev = df_gps_all[(df_gps_all["linea"] == d_linea) & (df_gps_all["orden"] == int(d_orden) - 1)]
-                if not sub_prev.empty:
-                    lat_p = float(sub_prev.iloc[0]["latitud"])
-                    lon_p = float(sub_prev.iloc[0]["longitud"])
-                    d_m_prev = distancia_geodesica_m(lat_p, lon_p, d_lat, d_lon)
-                    dist_calc_km = d_m_prev / 1000.0
-                    area_p = d_m_prev * ancho_serv_sel
-                    st.info(f"📏 Distancia geodésica desde el piquete anterior (Orden {int(d_orden)-1}): **{d_m_prev:.2f} m** | Superficie: **{area_p:,.1f} m²** (**{area_p/10000.0:.4f} ha**).")
-
             if st.button("💾 Guardar Coordenada GPS del Piquete", type="primary", use_container_width=True, key="btn_save_gps_single"):
                 if not d_piq.strip():
                     st.error("Ingresá el número o identificador del piquete.")
@@ -2121,7 +2126,7 @@ with tab_mapa:
                         "orden": int(d_orden),
                         "latitud": round(lat_ok, 6),
                         "longitud": round(lon_ok, 6),
-                        "dist_km": round(dist_calc_km, 5),
+                        "dist_km": 0.0,
                         "tipo": d_tipo,
                         "estructura": d_est,
                         "pct_desmonte": float(d_pct),
@@ -2133,12 +2138,9 @@ with tab_mapa:
 
     with subtab_imp:
         col_i1, col_i2 = st.columns(2)
-
         with col_i1:
             st.markdown("##### 📂 1. Importar Coordenadas (`Base de datos piquetes.xlsm` o `.csv`)")
-            st.caption("Importa automáticamente los 1.830 piquetes de las 9 líneas de la Región Centro con sus coordenadas GPS.")
             file_bd_gps = st.file_uploader("Subir Base de datos piquetes (.xlsm / .xlsx / .csv)", type=["xlsm", "xlsx", "csv"], key="upl_bd_piquetes")
-
             if file_bd_gps is not None:
                 try:
                     if file_bd_gps.name.lower().endswith(".csv"):
@@ -2161,7 +2163,7 @@ with tab_mapa:
                     df_in = df_in.sort_values(["linea", "_nat"]).drop(columns=["_nat"]).reset_index(drop=True)
                     df_in["orden"] = df_in.groupby("linea").cumcount() + 1
 
-                    st.success(f"✅ Detectados **{len(df_in):,} piquetes** válidos de la Región Centro.")
+                    st.success(f"✅ Detectados **{len(df_in):,} piquetes** válidos.")
                     if st.button("🚀 Cargar Coordenadas al Mapa de Red", type="primary", use_container_width=True, key="btn_imp_gps_bd"):
                         recs_imp = []
                         for r in df_in.itertuples():
@@ -2179,16 +2181,15 @@ with tab_mapa:
                                 "fecha_limpieza": str(date.today()),
                                 "tipo_vegetacion": "Monte Nativo / Chilcal"
                             })
-                        with st.spinner("Guardando 1.830 coordenadas GPS..."):
+                        with st.spinner("Guardando coordenadas GPS..."):
                             db_upsert_gps_batch(recs_imp)
-                        st.toast("¡Base GPS de Región Centro cargada con éxito!", icon="🗺️")
+                        st.toast("¡Base GPS cargada con éxito!", icon="🗺️")
                         st.rerun()
                 except Exception as e:
                     st.error(f"Error leyendo archivo de coordenadas: {e}")
 
         with col_i2:
             st.markdown("##### 🌲 2. Importar Planilla de Desmonte (`DESMONTE LAT *.xlsx`)")
-            st.caption("Lee los porcentajes por piquete de 'Porcentaje Piquetes', registra la fecha de relevamiento y actualiza el ciclo vegetal.")
             linea_desm_xl = st.selectbox("Línea LAT correspondiente a la planilla:", LINEAS_SIGLAS, key="imp_desm_linea")
             col_dx1, col_dx2 = st.columns(2)
             with col_dx1:
@@ -2197,7 +2198,6 @@ with tab_mapa:
                 veg_desm_xl = st.selectbox("Vegetación Dominante:", list(CICLOS_VEGETACION_DIAS.keys()), key="imp_desm_veg")
 
             file_desm_xl = st.file_uploader("Subir Excel de Desmonte (.xlsx)", type=["xlsx", "xlsm"], key="upl_desmonte_xl")
-
             if file_desm_xl is not None:
                 try:
                     df_pct_xl = pd.read_excel(file_desm_xl, sheet_name="Porcentaje Piquetes", header=1)
@@ -2214,61 +2214,17 @@ with tab_mapa:
                         pct_100 = val_raw * 100.0 if val_raw <= 1.0 else val_raw
                         mapa_pct[p_str] = round(pct_100, 2)
 
-                    sub_gps_l = df_gps_all[df_gps_all["linea"] == linea_desm_xl].copy() if not df_gps_all.empty else pd.DataFrame()
-                    if sub_gps_l.empty:
-                        st.warning(f"Primero cargá las coordenadas GPS de **{linea_desm_xl}** en el panel izquierdo.")
-                    else:
-                        lats = sub_gps_l["latitud"].tolist()
-                        lons = sub_gps_l["longitud"].tolist()
-                        piqs = sub_gps_l["piquete"].tolist()
-                        tot_m = 0.0
-                        limpio_m = 0.0
-                        for i in range(len(sub_gps_l) - 1):
-                            sin_desm, _ = es_tramo_sin_desmonte(linea_desm_xl, piqs[i], piqs[i+1])
-                            if sin_desm:
-                                continue
-                            dm = distancia_geodesica_m(lats[i], lons[i], lats[i+1], lons[i+1])
-                            pct_i = mapa_pct.get(str(piqs[i]).strip(), 0.0) / 100.0
-                            tot_m += dm
-                            limpio_m += dm * pct_i
-
-                        area_limpia_m2 = limpio_m * ancho_serv_sel
-                        ha_limpia = area_limpia_m2 / 10000.0
-                        pct_avance_tot = (limpio_m / tot_m * 100) if tot_m > 0 else 0.0
-
-                        st.info(
-                            f"**Resultado Cálculo GPS ({linea_desm_xl} — Franja {ancho_serv_sel:.0f}m):**\n"
-                            f"- Distancia limpia: **{limpio_m/1000.0:.2f} km** de {tot_m/1000.0:.2f} km (**{pct_avance_tot:.1f}%**)\n"
-                            f"- Superficie limpia: **{area_limpia_m2:,.0f} m²** (**{ha_limpia:.2f} ha**)"
-                        )
-
-                        if st.button("💾 Aplicar Avance al Mapa y Actualizar Plan ENRE", type="primary", use_container_width=True, key="btn_apply_desm_xl"):
-                            db_update_pct_desmonte_linea(linea_desm_xl, mapa_pct, fecha_relev=fecha_desm_xl, tipo_veg=veg_desm_xl)
-                            db_insert_registro({
-                                "anio": int(anio_sel),
-                                "linea": linea_desm_xl,
-                                "cuadrilla": "Cuadrilla 1 - Desmonte y Limpieza",
-                                "tarea": "Limpieza de Electroducto / Desmonte (Franja 22m)",
-                                "tramo_desc": f"Relevamiento GPS ({pct_avance_tot:.1f}% traza)",
-                                "semana_inicio": int(s_desde),
-                                "semana_fin": int(s_hasta),
-                                "prog_km": round(tot_m / 1000.0, 2),
-                                "ejec_km": round(limpio_m / 1000.0, 2),
-                                "prog_piq": len(sub_gps_l),
-                                "ejec_piq": sum(1 for v in mapa_pct.values() if v > 0),
-                                "ot": "GPS-DESM",
-                                "estado": "En Ejecución" if pct_avance_tot < 99.9 else "Ejecutado",
-                                "observaciones": f"Calculado por GPS ({ancho_serv_sel:.0f}m): {ha_limpia:.2f} ha limpias ({fecha_desm_xl.strftime('%d/%m/%Y')})."
-                            })
-                            st.toast(f"¡Desmonte de {linea_desm_xl} actualizado en Mapa e Indicadores!", icon="🌲")
-                            st.rerun()
+                    if st.button("💾 Aplicar Avance al Mapa y Actualizar Plan ENRE", type="primary", use_container_width=True, key="btn_apply_desm_xl"):
+                        db_update_pct_desmonte_linea(linea_desm_xl, mapa_pct, fecha_relev=fecha_desm_xl, tipo_veg=veg_desm_xl)
+                        st.toast(f"¡Desmonte de {linea_desm_xl} actualizado!", icon="🌲")
+                        st.rerun()
                 except Exception as e:
                     st.error(f"Error procesando planilla de desmonte: {e}")
 
     with subtab_calc:
         st.markdown("##### 📐 Calculadora de Distancia, Superficie (m²) y Hectáreas entre Piquetes")
         if df_gps_all.empty:
-            st.info("Cargá primero las coordenadas GPS en la pestaña anterior para usar la calculadora.")
+            st.info("Cargá primero las coordenadas GPS para usar la calculadora.")
         else:
             cc1, cc2, cc3, cc4 = st.columns([2, 1.3, 1.3, 1.4])
             with cc1:
@@ -2304,21 +2260,18 @@ with tab_mapa:
             sup_ejec_m2 = dist_ejec_m * ancho_serv_sel
             ha_total_tramo = sup_total_m2 / 10000.0
             ha_ejec_tramo = sup_ejec_m2 / 10000.0
-            km_linea_cat = CATALOGO_LAT[calc_linea]["km"]
-            pct_sobre_linea = ((dist_ejec_m / 1000.0) / km_linea_cat * 100) if km_linea_cat > 0 else 0.0
 
             rk1, rk2, rk3, rk4 = st.columns(4)
             rk1.metric("Distancia Aérea Tramo", f"{dist_tramo_m:,.1f} m", f"{dist_tramo_m/1000.0:.2f} km")
             rk2.metric(f"Superficie ({ancho_serv_sel:.0f}m)", f"{sup_ejec_m2:,.0f} m²", f"de {sup_total_m2:,.0f} m²")
             rk3.metric("Hectáreas Limpias", f"{ha_ejec_tramo:.2f} ha", f"de {ha_total_tramo:.2f} ha")
-            rk4.metric("% Avance s/ Línea Total", f"{pct_sobre_linea:.2f}%", f"sobre {km_linea_cat} km")
+            rk4.metric("% Avance s/ Línea", f"{(dist_ejec_m/1000.0)/CATALOGO_LAT[calc_linea]['km']*100:.2f}%")
 
 # =============================================================================
-# PESTAÑA 4: CRONOGRAMA SEMANAL (PLANIFICADO + EJECUCIÓN REAL DE CAMPO)
+# PESTAÑA 4: CRONOGRAMA SEMANAL
 # =============================================================================
 with tab_cronograma:
     incluir_reales_gantt = st.checkbox("🔗 Mostrar también ejecución real registrada en Perfilado y PAT en el cronograma", value=True, key="chk_reales_gantt")
-
     filas_gantt = []
 
     if not df_raw.empty:
@@ -2417,7 +2370,7 @@ with tab_cronograma:
         st.plotly_chart(fig_gantt, use_container_width=True, key="gantt_semanal_main")
 
 # =============================================================================
-# PESTAÑA 5: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
+# PESTAÑA 5: PROGRAMAR NUEVA ACTIVIDAD
 # =============================================================================
 with tab_cargar:
     st.markdown("### ➕ Cargar Programación Real de Mantenimiento")
@@ -2436,7 +2389,7 @@ with tab_cargar:
             sel_tarea = st.selectbox("🛠️ Actividad / Tarea", CUADRILLAS_CONFIG[sel_cuad]["tareas"], key="add_sel_tarea")
 
         info_lat = CATALOGO_LAT[sel_lat]
-        st.caption(f"📏 Datos físicos de **{sel_lat}**: Longitud total **{info_lat['km']} km** | **{info_lat['piquetes']} piquetes** | Franja total 22m: **{round(info_lat['km']*2.2, 1)} ha**.")
+        st.caption(f"📏 Datos físicos de **{sel_lat}**: Longitud total **{info_lat['km']} km** | **{info_lat['piquetes']} piquetes**.")
 
         c4, c5, c6 = st.columns([2.5, 1.2, 1.2])
         with c4:
@@ -2455,9 +2408,6 @@ with tab_cargar:
             prog_piq = st.number_input("Meta Programada (Piquetes)", min_value=0, max_value=int(info_lat["piquetes"]), value=int(info_lat["piquetes"]) if CUADRILLAS_CONFIG[sel_cuad]["unidad_principal"] == "piquetes" else 0, step=1, key="add_prog_piq")
         with c10:
             ejec_piq = st.number_input("Avance Ejecutado (Piquetes)", min_value=0, max_value=int(info_lat["piquetes"]), value=0, step=1, key="add_ejec_piq")
-
-        if sel_cuad == "Cuadrilla 1 - Desmonte y Limpieza" and prog_km > 0:
-            st.info(f"🌲 Superficie de desmonte programada (ancho 22m): **{prog_km * FACTOR_HA_POR_KM:.2f} hectáreas** (Ejecutado: **{ejec_km * FACTOR_HA_POR_KM:.2f} ha**).")
 
         c11, c12, c13 = st.columns([1.5, 1.5, 3])
         with c11:
@@ -2527,7 +2477,7 @@ with tab_gestion:
 
         st.divider()
         with st.expander("🧹 Limpieza de Datos de Prueba / Ficticios", expanded=True):
-            st.warning("Esta acción eliminará todos los registros cargados en `plan_mantenimiento_enre` (los datos reales de Perfilado y PAT en sus respectivas tablas **no** se tocan).")
+            st.warning("Esta acción eliminará todos los registros cargados en `plan_mantenimiento_enre`.")
             if st.button("🗑️ Borrar Todos los Datos Ficticios / Vaciar Plan", type="primary", key="btn_vaciar_todo"):
                 db_vaciar_plan_completo()
                 st.toast("Datos ficticios eliminados correctamente.", icon="🧹")
