@@ -446,7 +446,6 @@ def parsear_archivo_kml_kmz(file_bytes, filename):
                     nombre = child.text.strip()
                     break
             
-            # Extraer también de ExtendedData / SimpleData si el nombre está vacío o trae ID
             for sub in elem.iter():
                 if sub.tag.endswith("SimpleData") and sub.get("name") == "id" and sub.text:
                     if not nombre or nombre.isdigit():
@@ -458,13 +457,15 @@ def parsear_archivo_kml_kmz(file_bytes, filename):
                         if c_el.tag.endswith("coordinates") and c_el.text:
                             pts = _parse_kml_coords_text(c_el.text)
                             if pts:
-                                puntos.append({"name": nombre, "lat": pts[0][0], "lon": pts[0][1]})
+                                puntos.append({"name": nombre, "lat": pts[0][0], "lon": pts[0][1], "tipo_geo": "Punto (Point)"})
                 elif sub.tag.endswith("LineString"):
                     for c_el in sub.iter():
                         if c_el.tag.endswith("coordinates") and c_el.text:
                             pts = _parse_kml_coords_text(c_el.text)
                             if len(pts) >= 2:
                                 lineas.append({"name": nombre, "coords": pts})
+                                for p_lat, p_lon in pts:
+                                    puntos.append({"name": f"{nombre} (Ruta)", "lat": p_lat, "lon": p_lon, "tipo_geo": "Ruta (LineString)"})
                 elif sub.tag.endswith("Polygon"):
                     for b_el in sub.iter():
                         if b_el.tag.endswith("outerBoundaryIs"):
@@ -473,6 +474,8 @@ def parsear_archivo_kml_kmz(file_bytes, filename):
                                     pts = _parse_kml_coords_text(c_el.text)
                                     if len(pts) >= 3:
                                         poligonos.append({"name": nombre, "coords": pts})
+                                        for p_lat, p_lon in pts:
+                                            puntos.append({"name": f"{nombre} (Polígono)", "lat": p_lat, "lon": p_lon, "tipo_geo": "Polígono (Polygon)"})
                             break
 
     return puntos, lineas, poligonos
@@ -521,7 +524,6 @@ def extraer_id_piquete_de_nombre(nombre_str, set_piqs_validos):
     if s in set_piqs_validos:
         return s
 
-    # Buscar si viene con prefijo o formato id / número directo
     m_piq = re.search(r"(?:id[:\s]*|piq\.?|piquete[:\s]*)?\b([0-9]+[a-zA-Z]?)\b", s, flags=re.IGNORECASE)
     if m_piq and m_piq.group(1) in set_piqs_validos:
         return m_piq.group(1)
@@ -1903,11 +1905,27 @@ with tab_mapa:
 
             if kml_file_up is not None:
                 try:
-                    pts_kml, lins_kml, polys_kml = parsear_archivo_kml_kmz(kml_file_up.read(), kml_file_up.name)
+                    file_bytes_kml = kml_file_up.read()
+                    filename_kml = kml_file_up.name
+                    pts_kml, lins_kml, polys_kml = parsear_archivo_kml_kmz(file_bytes_kml, filename_kml)
+                    
                     st.success(
-                        f"✅ Archivo leído: **{len(pts_kml)} marcadores (Point)** | "
+                        f"✅ Archivo leído: **{len(pts_kml)} puntos/coordenadas** | "
                         f"**{len(lins_kml)} rutas (LineString)** | **{len(polys_kml)} polígonos (Polygon)**."
                     )
+
+                    # Botón para descargar reporte CSV con todas las coordenadas leídas del KML
+                    if pts_kml:
+                        df_kml_export = pd.DataFrame(pts_kml)
+                        csv_kml_bytes = df_kml_export.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            label="📥 Descargar Reporte CSV de Coordenadas Leídas del KML",
+                            data=csv_kml_bytes,
+                            file_name=f"Coordenadas_KML_{kml_linea_sel}_{date.today().strftime('%Y%m%d')}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                            key="dl_csv_coordenadas_kml"
+                        )
 
                     sub_kml_l = df_gps_all[df_gps_all["linea"] == kml_linea_sel].copy().reset_index(drop=True)
                     set_piqs_l = set(sub_kml_l["piquete"].astype(str).str.strip().tolist())
