@@ -603,7 +603,6 @@ def db_fetch_ets():
         for nom, lat, lon in res:
             ets_dict[nom] = (float(lat), float(lon))
 
-    # Fallback por defecto si la tabla está vacía
     if not ets_dict:
         ets_dict = {
             "ET Resistencia": (-27.301114, -59.107262),
@@ -1941,48 +1940,47 @@ with tab_mapa:
         "📐 Calculadora por Tramo (m² y ha)"
     ])
 
-with subtab_kml:
+    with subtab_kml:
         st.markdown("##### 🌍 Importar Correcciones de Google Earth Pro (`.kml` / `.kmz`)")
-        st.caption("Subí un archivo exportado desde Google Earth Pro para actualizar piquetes de una línea o registrar de forma masiva Estaciones Transformadoras (ET).")
+        st.caption("Subí un archivo exportado desde Google Earth Pro para registrar Estaciones Transformadoras (ET) masivamente o actualizar la traza de las líneas.")
 
-        if df_gps_all.empty:
-            st.info("Cargá primero la base de coordenadas GPS para operar con la red.")
+        tipo_importacion = st.radio(
+            "📂 ¿Qué tipo de elemento querés importar?",
+            [
+                "⚡ Estaciones Transformadoras (ET) masivas",
+                "📍 Piquetes de Línea LAT (Actualizar coordenadas o tramos)"
+            ],
+            horizontal=True,
+            key="tipo_imp_kml_radio"
+        )
+
+        if tipo_importacion.startswith("⚡"):
+            st.info("💡 Subí el archivo KML/KMZ que contenga las Estaciones Transformadoras. El sistema detectará automáticamente los puntos con nombres de ET.")
+            kml_file_et = st.file_uploader("Subir archivo KML/KMZ de Estaciones Transformadoras", type=["kml", "kmz"], key="upl_et_kml_masivo")
+
+            if kml_file_up := kml_file_et:
+                try:
+                    pts_et, _, _ = parsear_archivo_kml_kmz(kml_file_up.read(), kml_file_up.name)
+                    ets_detectadas = [p for p in pts_et if "et" in str(p["name"]).lower() or "estacion" in str(p["name"]).lower() or "subestación" in str(p["name"]).lower()]
+                    
+                    if not ets_detectadas:
+                        st.warning("No se detectaron puntos con nombres de ET en el archivo. Asegurate de que los marcadores incluyan la palabra 'ET' en su nombre en Google Earth.")
+                    else:
+                        st.success(f"⚡ Se detectaron **{len(ets_detectadas)} Estaciones Transformadoras** listas para registrar.")
+                        df_ets_prev = pd.DataFrame(ets_detectadas)[["name", "lat", "lon"]].rename(columns={"name": "Nombre ET", "lat": "Latitud", "lon": "Longitud"})
+                        st.dataframe(df_ets_prev, use_container_width=True, hide_index=True)
+
+                        if st.button("💾 Guardar Todas las ETs Detectadas en la Base de Datos", type="primary", use_container_width=True, key="btn_save_all_ets_kml"):
+                            for et in ets_detectadas:
+                                db_upsert_et(et["name"], et["lat"], et["lon"])
+                            st.toast(f"¡{len(ets_detectadas)} Estaciones Transformadoras guardadas con éxito!", icon="⚡")
+                            st.rerun()
+                except Exception as e_et:
+                    st.error(f"Error procesando el archivo de ETs: {e_et}")
+
         else:
-            # Selector de tipo de importación para evitar confusiones
-            tipo_importacion = st.radio(
-                "📂 ¿Qué tipo de elemento querés importar?",
-                [
-                    "⚡ Estaciones Transformadoras (ET) masivas",
-                    "📍 Piquetes de Línea LAT (Actualizar coordenadas o tramos)"
-                ],
-                horizontal=True,
-                key="tipo_imp_kml_radio"
-            )
-
-            if tipo_importacion.startswith("⚡"):
-                st.info("💡 Subí el archivo KML/KMZ que contenga las Estaciones Transformadoras. El sistema detectará automáticamente los puntos que contengan 'ET' o 'Estación' en su nombre.")
-                kml_file_et = st.file_uploader("Subir archivo KML/KMZ de Estaciones Transformadoras", type=["kml", "kmz"], key="upl_et_kml_masivo")
-
-                if kml_file_up := kml_file_et:
-                    try:
-                        pts_et, _, _ = parsear_archivo_kml_kmz(kml_file_up.read(), kml_file_up.name)
-                        ets_detectadas = [p for p in pts_et if "et" in str(p["name"]).lower() or "estacion" in str(p["name"]).lower() or "subestación" in str(p["name"]).lower()]
-                        
-                        if not ets_detectadas:
-                            st.warning("No se detectaron puntos con nombres de ET en el archivo. Asegurate de que los marcadores incluyan la palabra 'ET' en su nombre en Google Earth.")
-                        else:
-                            st.success(f"⚡ Se detectaron **{len(ets_detectadas)} Estaciones Transformadoras** listas para registrar.")
-                            df_ets_prev = pd.DataFrame(ets_detectadas)[["name", "lat", "lon"]].rename(columns={"name": "Nombre ET", "lat": "Latitud", "lon": "Longitud"})
-                            st.dataframe(df_ets_prev, use_container_width=True, hide_index=True)
-
-                            if st.button("💾 Guardar Todas las ETs Detectadas en la Base de Datos", type="primary", use_container_width=True, key="btn_save_all_ets_kml"):
-                                for et in ets_detectadas:
-                                    db_upsert_et(et["name"], et["lat"], et["lon"])
-                                st.toast(f"¡{len(ets_detectadas)} Estaciones Transformadoras guardadas con éxito!", icon="⚡")
-                                st.rerun()
-                    except Exception as e_et:
-                        st.error(f"Error procesando el archivo de ETs: {e_et}")
-
+            if df_gps_all.empty:
+                st.info("Cargá primero la base de coordenadas GPS para operar con la red.")
             else:
                 kc1, kc2 = st.columns([1.4, 2.6])
                 with kc1:
