@@ -1715,12 +1715,11 @@ with tab_mapa:
             key="map_capa_op"
         )
     with cm4:
-        proyeccion_meses = st.select_slider(
-            "⏳ Simulación Rebrote:",
-            options=[0, 3, 6, 9, 12],
-            value=0,
-            format_func=lambda m: "Hoy (Tiempo Real)" if m == 0 else f"+{m} meses",
-            key="map_proyeccion_meses"
+        fecha_evaluacion = st.date_input(
+            "📅 Fecha de Evaluación / Imagen:",
+            value=date.today(),
+            format="DD/MM/YYYY",
+            key="map_fecha_eval"
         )
     with cm5:
         estilo_mapa = st.selectbox(
@@ -1729,8 +1728,6 @@ with tab_mapa:
             format_func=lambda s: {"open-street-map": "Rutas (OSM)", "carto-darkmatter": "Oscuro", "carto-positron": "Claro"}[s],
             key="map_estilo_fondo"
         )
-
-    fecha_evaluacion = date.today() + timedelta(days=int(proyeccion_meses) * 30)
 
     if df_gps_all.empty:
         st.warning("⚠️ Aún no hay coordenadas GPS cargadas. Subí tu archivo **`Base de datos piquetes.xlsm`** en la pestaña de importación de abajo para cargar los 1.830 piquetes.")
