@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import requests
 
 # Generador PDF oficial para Auditoría ENRE
 try:
@@ -206,6 +207,52 @@ def corregir_par_lat_lon(lat_val, lon_val):
     if lat < -45.0 and lon > -45.0:
         return lon, lat
     return lat, lon
+
+def obtener_ndvi_sentinel2_punto(lat, lon, fecha_evaluacion=None):
+    """
+    Consulta la API abierta de Microsoft Planetary Computer para obtener 
+    la última imagen satelital de Sentinel-2 sin nubes en una coordenada dada.
+    """
+    if fecha_evaluacion is None:
+        fecha_eval = datetime.today()
+    else:
+        fecha_eval = datetime.combine(fecha_evaluacion, datetime.min.time())
+    
+    f_inicio = (fecha_eval - timedelta(days=45)).strftime("%Y-%m-%d")
+    f_fin = fecha_eval.strftime("%Y-%m-%d")
+    
+    delta = 0.0002
+    bbox = [lon - delta, lat - delta, lon + delta, lat + delta]
+    
+    stac_url = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+    payload = {
+        "collections": ["sentinel-2-l2a"],
+        "bbox": bbox,
+        "datetime": f"{f_inicio}/{f_fin}",
+        "query": {"eo:cloud_cover": {"lt": 15}},
+        "limit": 1
+    }
+    
+    try:
+        response = requests.post(stac_url, json=payload, timeout=8)
+        if response.status_code != 200:
+            return None, "Error de conexión con la API STAC"
+        
+        items = response.json().get("features", [])
+        if not items:
+            return None, "Sin pasadas despejadas en el período"
+        
+        item = items[0]
+        fecha_imagen = item["properties"].get("datetime", "")[:10]
+        nubes_pct = item["properties"].get("eo:cloud_cover", 0)
+        
+        return {
+            "fecha_imagen": fecha_imagen,
+            "nubes_pct": nubes_pct,
+            "id_satelite": item["id"]
+        }, "OK"
+    except Exception as e:
+        return None, str(e)
 
 def calcular_limpieza_vigente(pct_base, fecha_limp_str, tipo_veg, fecha_objetivo):
     pct_ini = float(pct_base or 0.0)
@@ -1717,7 +1764,7 @@ with tab_mapa:
     with cm4:
         fecha_evaluacion = st.date_input(
             "📅 Fecha de Evaluación / Imagen:",
-            value=date.today(),
+            value=date(2026, 11, 11),
             format="DD/MM/YYYY",
             key="map_fecha_eval"
         )
@@ -1732,6 +1779,19 @@ with tab_mapa:
     if df_gps_all.empty:
         st.warning("⚠️ Aún no hay coordenadas GPS cargadas. Subí tu archivo **`Base de datos piquetes.xlsm`** en la pestaña de importación de abajo para cargar los 1.830 piquetes.")
     else:
+        # Botón para auditoría satelital en vivo con API Sentinel-2 (Planetary Computer)
+        if not mapa_linea_sel.startswith("TODAS"):
+            if st.button(f"🛰️ Consultar Estado Satelital en Vivo (Sentinel-2) para {mapa_linea_sel}", key="btn_check_stac"):
+                sub_test = df_gps_all[df_gps_all["linea"] == mapa_linea_sel]
+                if not sub_test.empty:
+                    mid_row = sub_test.iloc[len(sub_test) // 2]
+                    with st.spinner("Consultando constelación Sentinel-2 (Microsoft Planetary Computer)..."):
+                        res_stac, msg_stac = obtener_ndvi_sentinel2_punto(mid_row["latitud"], mid_row["longitud"], fecha_evaluacion)
+                        if msg_stac == "OK":
+                            st.success(f"✅ Imagen satelital libre de nubes encontrada para {mapa_linea_sel}: **{res_stac['fecha_imagen']}** (Nubosidad: {res_stac['nubes_pct']}%). ID: `{res_stac['id_satelite']}`")
+                        else:
+                            st.warning(f"⚠️ Aviso satelital: {msg_stac}")
+
         df_map = df_gps_all.copy() if mapa_linea_sel.startswith("TODAS") else df_gps_all[df_gps_all["linea"] == mapa_linea_sel].copy()
         df_map["_nat"] = df_map["piquete"].apply(natural_piq_key)
         df_map = df_map.sort_values(["linea", "_nat"]).drop(columns=["_nat"]).reset_index(drop=True)
