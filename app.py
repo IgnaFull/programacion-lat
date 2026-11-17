@@ -74,7 +74,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO, AEA 95301 Y CICLOS VEGETALES NEA
+# 2. CATÁLOGOS MAESTROS REGIÓN CENTRO, AEA 95301 Y PRECOSTEO
 # =============================================================================
 ANCHO_FRANJA_M = 22.0  # 11m izquierda + 11m derecha desde hilo de guardia (AEA 95301)
 FACTOR_HA_POR_KM = ANCHO_FRANJA_M * 1000.0 / 10000.0  # 2.2 ha por cada km lineal
@@ -90,6 +90,24 @@ CATALOGO_LAT = {
     "SCA-BVI": {"tramo": "Santa Catalina (Corrientes) / Bella Vista (Corrientes)", "km": 121.00, "piquetes": 463, "color": "#D946EF"},
     "BVI-GOY": {"tramo": "Bella Vista (Corrientes) / Goya (Corrientes)", "km": 77.70, "piquetes": 303, "color": "#EC4899"},
 }
+
+# Inventario ampliado para Precosteo 2026 (13 líneas del Excel de referencia + ECO-SMA)
+INVENTARIO_PRECOSTEO_BASE = [
+    {"prio": 1, "cod": "1SCABVI1", "lat": "SCA-BVI", "tramo": "Santa Catalina - Bella Vista", "kv": 132, "km": 121.00, "region_9": True, "unico_xl": True, "pct_entorno": 65.0, "entorno": "Monte / Estero cerrado", "obs": "Corredor principal sur Corrientes"},
+    {"prio": 2, "cod": "1BVIGOY1", "lat": "BVI-GOY", "tramo": "Bella Vista - Goya", "kv": 132, "km": 77.70, "region_9": True, "unico_xl": True, "pct_entorno": 60.0, "entorno": "Monte nativo / Rural", "obs": "Corredor sur Corrientes"},
+    {"prio": 3, "cod": "1LLERES1", "lat": "RES-LLE", "tramo": "La Leonesa - Resistencia", "kv": 132, "km": 62.80, "region_9": True, "unico_xl": True, "pct_entorno": 48.0, "entorno": "Mixto rural / Bañado", "obs": "Corredor Ruta 11 Chaco"},
+    {"prio": 4, "cod": "1LLEMAN1", "lat": "LLE-MAN", "tramo": "La Leonesa - Mansilla", "kv": 132, "km": 46.60, "region_9": True, "unico_xl": True, "pct_entorno": 68.0, "entorno": "Monte alto / Río Bermejo", "obs": "Tramo interprovincial Chaco - Formosa"},
+    {"prio": 5, "cod": "1RESSCA1", "lat": "RES-SCA", "tramo": "Resistencia - Santa Catalina", "kv": 132, "km": 37.47, "region_9": True, "unico_xl": True, "pct_entorno": 42.0, "entorno": "Suburbano / Bañado", "obs": "Tramo aéreo (desc. 4,93 km subt.)"},
+    {"prio": 6, "cod": "1RESBAR2", "lat": "RES-BAR 2", "tramo": "Resistencia - Barranqueras 2", "kv": 132, "km": 31.40, "region_9": True, "unico_xl": True, "pct_entorno": 22.0, "entorno": "Periurbano / Industrial", "obs": "Corredor periurbano Resistencia"},
+    {"prio": 7, "cod": "1RESCOR1", "lat": "RES-CCE", "tramo": "Resistencia - Corrientes Centro", "kv": 132, "km": 30.50, "region_9": True, "unico_xl": True, "pct_entorno": 30.0, "entorno": "Periurbano / Cruce río", "obs": "Cruce interprovincial Chaco - Corrientes"},
+    {"prio": 8, "cod": "1ECOSMA1", "lat": "ECO-SMA", "tramo": "El Colorado - San Martín", "kv": 132, "km": 30.47, "region_9": True, "unico_xl": False, "pct_entorno": 65.0, "entorno": "Monte nativo / Bermejo", "obs": "Incorporada (faltante en Excel ref.)"},
+    {"prio": 9, "cod": "1RESBAR1", "lat": "RES-BAR 1", "tramo": "Resistencia - Barranqueras 1", "kv": 132, "km": 30.20, "region_9": True, "unico_xl": True, "pct_entorno": 22.0, "entorno": "Periurbano / Industrial", "obs": "Corredor periurbano Resistencia"},
+    {"prio": 10, "cod": "1PPASCA1", "lat": "PPA-SCA 1", "tramo": "Paso de la Patria - Santa Catalina (T1)", "kv": 132, "km": 20.81, "region_9": False, "unico_xl": True, "pct_entorno": 45.0, "entorno": "Rural / Forestal", "obs": "Propietario T.I. ENECOR - Doble terna"},
+    {"prio": 11, "cod": "1PPASCA2", "lat": "PPA-SCA 2", "tramo": "Paso de la Patria - Santa Catalina (T2)", "kv": 132, "km": 20.81, "region_9": False, "unico_xl": False, "pct_entorno": 45.0, "entorno": "Rural / Forestal", "obs": "2da terna ENECOR (comparte traza)"},
+    {"prio": 12, "cod": "3BARCOR1", "lat": "BAR-COR (T1)", "tramo": "Barranqueras - Corrientes Centro (T1)", "kv": 33, "km": 8.00, "region_9": False, "unico_xl": True, "pct_entorno": 25.0, "entorno": "Periurbano / Ribera", "obs": "33 kV - Doble terna con 3BARCOR2"},
+    {"prio": 13, "cod": "3BARCOR2", "lat": "BAR-COR (T2)", "tramo": "Barranqueras - Corrientes Centro (T2)", "kv": 33, "km": 8.00, "region_9": False, "unico_xl": False, "pct_entorno": 25.0, "entorno": "Periurbano / Ribera", "obs": "33 kV - 2da terna (comparte traza)"},
+    {"prio": 14, "cod": "1CORSCA1", "lat": "COR-SCA", "tramo": "Corrientes Centro - Santa Catalina", "kv": 132, "km": 5.80, "region_9": False, "unico_xl": False, "pct_entorno": 15.0, "entorno": "Urbano / Periurbano", "obs": "Zona urbana Corrientes - Santa Catalina"},
+]
 
 # Ciclos de rebrote vegetal en Región NEA (días base para invasión completa de franja)
 CICLOS_VEGETACION_DIAS = {
@@ -156,6 +174,8 @@ def normalizar_sigla_lat(nombre):
         "RES-BAR 2": "RES-BAR2",
         "RES BAR 1": "RES-BAR1",
         "RES BAR 2": "RES-BAR2",
+        "LLE-RES": "RES-LLE",
+        "RES-COR": "RES-CCE",
     }
     return equivalencias.get(s, s)
 
@@ -197,7 +217,6 @@ def calcular_limpieza_vigente(pct_base, fecha_limp_str, tipo_veg, fecha_objetivo
     if dias_transcurridos <= 0:
         return round(pct_ini, 1)
 
-    # Factor estacional NEA: en primavera/verano (Oct-Mar) el rebrote es 1.25x más rápido; en otoño/invierno 0.80x
     mes_eval = fecha_objetivo.month
     factor_estacional = 1.25 if mes_eval in [10, 11, 12, 1, 2, 3] else 0.80
 
@@ -613,7 +632,7 @@ def db_vaciar_plan_completo():
     conn.close()
 
 # =============================================================================
-# 4. GENERADORES DE INFORMES DE AUDITORÍA ENRE (PDF Y EXCEL)
+# 4. GENERADORES DE INFORMES DE AUDITORÍA ENRE Y PRECOSTEO (PDF Y EXCEL)
 # =============================================================================
 def generar_pdf_auditoria_enre(df_resumen_lineas, df_tareas, anio, horizonte_txt):
     if not REPORTLAB_AVAILABLE:
@@ -821,6 +840,82 @@ def generar_excel_auditoria_enre(df_resumen_lineas, df_tareas, df_semanas_vista,
     wb.save(buf)
     return buf.getvalue()
 
+def generar_excel_precosteo(df_prec, ancho_m, litros_top, litros_dis, precio_gas, metodo_txt):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Precosteo_Zona_Centro"
+
+    fill_green = PatternFill(start_color="0E5E35", end_color="0E5E35", fill_type="solid")
+    fill_dark = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    font_title = Font(name="Calibri", size=12, bold=True, color="FFFFFF")
+    font_head = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    thin = Border(
+        left=Side(style="thin", color="CBD5E1"), right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"), bottom=Side(style="thin", color="CBD5E1")
+    )
+
+    ws.merge_cells("A1:K1")
+    ws["A1"] = f"TRANSNEA S.A. — PRECOSTEO LIMPIEZA ELECTRODUCTOS ZONA CENTRO ({metodo_txt})"
+    ws["A1"].font = font_title
+    ws["A1"].fill = fill_green
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 26
+
+    ws["B3"] = "Ancho Franja (m)"
+    ws["C3"] = ancho_m
+    ws["B4"] = "Consumo Topadora Año 1 (L/ha)"
+    ws["C4"] = litros_top
+    ws["B5"] = "Consumo Disco Año 2+ (L/ha)"
+    ws["C5"] = litros_dis
+    ws["B6"] = "Precio Gasoil ($/L)"
+    ws["C6"] = precio_gas
+
+    headers = [
+        "Prioridad", "Código Técnico", "LAT", "Tramo", "kV", "KM",
+        "HA Total", "% Monte a Desmontar", "HA Desmonte",
+        "Inversión Año 1 ($)", "Mantenimiento Año 2+ ($)"
+    ]
+    for ci, h in enumerate(headers, start=1):
+        c = ws.cell(row=8, column=ci, value=h)
+        c.font = font_head
+        c.fill = fill_dark
+        c.alignment = Alignment(horizontal="center")
+        c.border = thin
+
+    for ri, r in enumerate(df_prec.itertuples(), start=9):
+        vals = [
+            r.Prio, r.Cod, r.LAT, r.Tramo, r.kV, r.KM,
+            r.HA_Total, r.Pct_Monte, r.HA_Desmonte,
+            r.Anio1, r.Anio2
+        ]
+        for ci, v in enumerate(vals, start=1):
+            c = ws.cell(row=ri, column=ci, value=v)
+            c.border = thin
+            if ci in [1, 5, 6, 7, 8, 9]:
+                c.alignment = Alignment(horizontal="center")
+            elif ci in [10, 11]:
+                c.number_format = "$#,##0"
+
+    last_r = 9 + len(df_prec)
+    ws.cell(row=last_r, column=3, value="TOTAL").font = Font(bold=True)
+    ws.cell(row=last_r, column=6, value=round(df_prec["KM"].sum(), 2)).font = Font(bold=True)
+    ws.cell(row=last_r, column=7, value=round(df_prec["HA_Total"].sum(), 2)).font = Font(bold=True)
+    ws.cell(row=last_r, column=9, value=round(df_prec["HA_Desmonte"].sum(), 2)).font = Font(bold=True)
+    c_a1 = ws.cell(row=last_r, column=10, value=round(df_prec["Anio1"].sum(), 2))
+    c_a1.font = Font(bold=True)
+    c_a1.number_format = "$#,##0"
+    c_a2 = ws.cell(row=last_r, column=11, value=round(df_prec["Anio2"].sum(), 2))
+    c_a2.font = Font(bold=True)
+    c_a2.number_format = "$#,##0"
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col[0].column)].width = max(max_len + 3, 13)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
 # =============================================================================
 # 5. ENCABEZADO Y SELECTOR DE HORIZONTE TEMPORAL
 # =============================================================================
@@ -885,8 +980,9 @@ df_raw = db_fetch_plan()
 df_gps_all = db_fetch_gps()
 df_perf_real, df_pat_real = fetch_datos_reales_supabase()
 
-tab_indicadores, tab_mapa, tab_cronograma, tab_cargar, tab_gestion = st.tabs([
+tab_indicadores, tab_precosteo, tab_mapa, tab_cronograma, tab_cargar, tab_gestion = st.tabs([
     "📊 Indicadores y Auditoría ENRE",
+    "💰 Precosteo y Monte Real",
     "🗺️ Mapa de Red",
     "🗓️ Cronograma Semanal",
     "➕ Programar Actividad",
@@ -1106,7 +1202,197 @@ with tab_indicadores:
             st.info("Instalá 'reportlab' en requirements.txt para habilitar la exportación PDF.")
 
 # =============================================================================
-# PESTAÑA 2: MAPA DE RED (REGIÓN CENTRO + MOTOR DE REBROTE CÍCLICO + SATÉLITE)
+# PESTAÑA 2: PRECOSTEO Y ESTIMACIÓN DE HECTÁREAS REALES DE MONTE (2026)
+# =============================================================================
+with tab_precosteo:
+    st.markdown("### 💰 Precosteo 2026 y Estimación de Hectáreas Reales a Desmontar")
+    st.caption("Modelo indexado a litros equivalentes de gasoil (AEA 95301) con calibración por datos satelitales Sentinel-2, entorno geográfico o edición manual por línea.")
+
+    # Calcular % de monte pendiente desde los datos reales de Supabase (piquetes_gps)
+    pct_monte_satelite = {}
+    if not df_gps_all.empty:
+        df_gps_calc = df_gps_all.copy()
+        df_gps_calc["_nat"] = df_gps_calc["piquete"].apply(natural_piq_key)
+        df_gps_calc = df_gps_calc.sort_values(["linea", "_nat"]).reset_index(drop=True)
+        for sig, grp in df_gps_calc.groupby("linea", sort=False):
+            grp = grp.reset_index(drop=True)
+            tot_m = 0.0
+            monte_m = 0.0
+            for i in range(len(grp) - 1):
+                dm = distancia_geodesica_m(grp.loc[i, "latitud"], grp.loc[i, "longitud"], grp.loc[i+1, "latitud"], grp.loc[i+1, "longitud"])
+                pct_limp_vig = calcular_limpieza_vigente(grp.loc[i, "pct_desmonte"], grp.loc[i, "fecha_limpieza"], grp.loc[i, "tipo_vegetacion"], date.today())
+                frac_monte = max(0.0, min(1.0, (100.0 - pct_limp_vig) / 100.0))
+                tot_m += dm
+                monte_m += dm * frac_monte
+            if tot_m > 0:
+                pct_monte_satelite[sig] = round((monte_m / tot_m) * 100.0, 1)
+
+    with st.container(border=True):
+        pc1, pc2, pc3 = st.columns([2.1, 2.2, 1.7])
+        with pc1:
+            alcance_prec = st.selectbox(
+                "📋 Alcance de Red a Presupuestar:",
+                [
+                    "9 Líneas Operativas Región Centro (Incl. ECO-SMA)",
+                    "10 Corredores Únicos Excel Precosteo (Excl. 2da terna y urbano)",
+                    "Inventario Completo Ampliado (14 líneas - 531,56 km)"
+                ],
+                index=0,
+                key="prec_alcance_sel"
+            )
+        with pc2:
+            metodo_monte = st.selectbox(
+                "🛰️ Método de Estimación de Hectáreas de Monte:",
+                [
+                    "Datos Reales Satélite Sentinel-2 / Campo (Supabase)",
+                    "Calibrado por Entorno Geográfico NEA (Monte vs. Periurbano)",
+                    "Supuesto Plano Base Excel (52,5% ref. Zona Norte)"
+                ],
+                index=0 if pct_monte_satelite else 1,
+                key="prec_metodo_sel"
+            )
+        with pc3:
+            pct_plano_slider = st.slider(
+                "🎚️ % Monte (si usa Supuesto Plano):",
+                min_value=10.0, max_value=100.0, value=52.5, step=0.5,
+                disabled=(metodo_monte != "Supuesto Plano Base Excel (52,5% ref. Zona Norte)"),
+                key="prec_pct_plano"
+            )
+
+        pp1, pp2, pp3, pp4 = st.columns(4)
+        with pp1:
+            prec_ancho = st.number_input("Ancho Franja (m)", min_value=10.0, max_value=50.0, value=22.0, step=1.0, key="prec_ancho")
+        with pp2:
+            prec_gasoil = st.number_input("Precio Gasoil ($/litro)", min_value=500.0, max_value=10000.0, value=2459.0, step=50.0, key="prec_gasoil")
+        with pp3:
+            prec_lit_top = st.number_input("Topadora Año 1 (L/ha)", min_value=200.0, max_value=3000.0, value=1000.0, step=50.0, key="prec_lit_top")
+        with pp4:
+            prec_lit_dis = st.number_input("Disco Año 2+ (L/ha)", min_value=30.0, max_value=500.0, value=120.0, step=10.0, key="prec_lit_dis")
+
+    # Filtrar inventario según alcance
+    df_inv = pd.DataFrame(INVENTARIO_PRECOSTEO_BASE)
+    if alcance_prec.startswith("9 Líneas"):
+        df_inv = df_inv[df_inv["region_9"]].copy()
+    elif alcance_prec.startswith("10 Corredores"):
+        df_inv = df_inv[df_inv["unico_xl"]].copy()
+
+    # Asignar % monte según el método seleccionado
+    pcts_asignados = []
+    for r in df_inv.itertuples():
+        sig_norm = normalizar_sigla_lat(r.lat)
+        if metodo_monte.startswith("Datos Reales Satélite"):
+            val_p = pct_monte_satelite.get(sig_norm, r.pct_entorno)
+        elif metodo_monte.startswith("Calibrado por Entorno"):
+            val_p = r.pct_entorno
+        else:
+            val_p = pct_plano_slider
+        pcts_asignados.append(float(val_p))
+
+    df_inv["Pct_Monte"] = pcts_asignados
+
+    st.markdown("##### ✏️ Tabla Editable por Línea (Podés ajustar manualmente el `% Monte` o `KM` de cualquier línea)")
+    df_edit_in = df_inv[["prio", "cod", "lat", "tramo", "kv", "km", "Pct_Monte", "entorno", "obs"]].rename(columns={
+        "prio": "Prio", "cod": "Cod", "lat": "LAT", "tramo": "Tramo",
+        "kv": "kV", "km": "KM", "entorno": "Entorno", "obs": "Observaciones"
+    })
+
+    df_edited = st.data_editor(
+        df_edit_in,
+        column_config={
+            "Prio": st.column_config.NumberColumn("Prio", disabled=True, width="small"),
+            "Cod": st.column_config.TextColumn("Código", disabled=True, width="small"),
+            "LAT": st.column_config.TextColumn("Línea", disabled=True, width="small"),
+            "Tramo": st.column_config.TextColumn("Tramo E.T.", disabled=True),
+            "kV": st.column_config.NumberColumn("kV", disabled=True, width="small"),
+            "KM": st.column_config.NumberColumn("KM", min_value=0.1, max_value=500.0, step=0.1, format="%.2f"),
+            "Pct_Monte": st.column_config.NumberColumn("% Monte a Desmontar", min_value=0.0, max_value=100.0, step=0.5, format="%.1f%%"),
+            "Entorno": st.column_config.TextColumn("Entorno", disabled=True),
+            "Observaciones": st.column_config.TextColumn("Observaciones", disabled=True),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="editor_precosteo_lineas"
+    )
+
+    # Cálculos exactos replicating las fórmulas del Excel
+    df_calc = df_edited.copy()
+    df_calc["HA_Total"] = (df_calc["KM"] * prec_ancho / 10.0).round(2)
+    df_calc["HA_Desmonte"] = (df_calc["HA_Total"] * (df_calc["Pct_Monte"] / 100.0)).round(2)
+    df_calc["Anio1"] = (df_calc["HA_Desmonte"] * prec_lit_top * prec_gasoil).round(2)
+    df_calc["Anio2"] = (df_calc["HA_Total"] * prec_lit_dis * prec_gasoil).round(2)
+
+    tot_km_p = df_calc["KM"].sum()
+    tot_ha_p = df_calc["HA_Total"].sum()
+    tot_ha_desm_p = df_calc["HA_Desmonte"].sum()
+    pct_prom_pond = (tot_ha_desm_p / tot_ha_p * 100.0) if tot_ha_p > 0 else 0.0
+    tot_anio1_p = df_calc["Anio1"].sum()
+    tot_anio2_p = df_calc["Anio2"].sum()
+
+    pk1, pk2, pk3, pk4, pk5 = st.columns(5)
+    pk1.metric("Longitud Total", f"{tot_km_p:,.2f} km", f"{len(df_calc)} líneas")
+    pk2.metric(f"Servidumbre Total ({prec_ancho:.0f}m)", f"{tot_ha_p:,.2f} ha", f"{prec_ancho/10.0:.2f} ha/km")
+    pk3.metric("Hectáreas a Desmontar", f"{tot_ha_desm_p:,.2f} ha", f"{pct_prom_pond:.1f}% promedio ponderado")
+    pk4.metric("Inversión Año 1 (Desmonte)", f"${tot_anio1_p:,.0f}", f"${prec_lit_top * prec_gasoil:,.0f}/ha")
+    pk5.metric("Mantenimiento Año 2+", f"${tot_anio2_p:,.0f}/año", f"${prec_lit_dis * prec_gasoil:,.0f}/ha")
+
+    cg_p1, cg_p2 = st.columns(2)
+    with cg_p1:
+        st.markdown("##### 🌲 Hectáreas Totales vs. Hectáreas de Monte a Desmontar")
+        fig_ha = go.Figure()
+        fig_ha.add_trace(go.Bar(
+            y=df_calc["LAT"], x=df_calc["HA_Total"], name="Franja Total (ha)",
+            orientation="h", marker=dict(color="#334155")
+        ))
+        fig_ha.add_trace(go.Bar(
+            y=df_calc["LAT"], x=df_calc["HA_Desmonte"], name="Monte a Desmontar (ha)",
+            orientation="h", marker=dict(color="#10B981"),
+            text=[f"{v:.1f} ha" for v in df_calc["HA_Desmonte"]], textposition="outside"
+        ))
+        fig_ha.update_layout(
+            template="plotly_dark", barmode="overlay",
+            plot_bgcolor="#0F172A", paper_bgcolor="#0F172A",
+            xaxis=dict(title="Hectáreas (ha)", gridcolor="#334155", range=[0, df_calc["HA_Total"].max() * 1.18]),
+            yaxis=dict(autorange="reversed", gridcolor="#334155"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=430, margin=dict(l=15, r=35, t=30, b=20)
+        )
+        st.plotly_chart(fig_ha, use_container_width=True, key="chart_prec_ha")
+
+    with cg_p2:
+        st.markdown("##### 💵 Costo Estimado por Línea (Millones de $)")
+        fig_cost = go.Figure()
+        fig_cost.add_trace(go.Bar(
+            y=df_calc["LAT"], x=df_calc["Anio1"] / 1e6, name="Año 1: Desmonte Topadora ($M)",
+            orientation="h", marker=dict(color="#F59E0B"),
+            text=[f"${v/1e6:.1f}M" for v in df_calc["Anio1"]], textposition="outside"
+        ))
+        fig_cost.add_trace(go.Bar(
+            y=df_calc["LAT"], x=df_calc["Anio2"] / 1e6, name="Año 2+: Mantenimiento Disco ($M)",
+            orientation="h", marker=dict(color="#3B82F6")
+        ))
+        fig_cost.update_layout(
+            template="plotly_dark", barmode="group",
+            plot_bgcolor="#0F172A", paper_bgcolor="#0F172A",
+            xaxis=dict(title="Millones de Pesos ($M)", gridcolor="#334155", range=[0, (df_calc["Anio1"].max() / 1e6) * 1.22]),
+            yaxis=dict(autorange="reversed", gridcolor="#334155"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=430, margin=dict(l=15, r=35, t=30, b=20)
+        )
+        st.plotly_chart(fig_cost, use_container_width=True, key="chart_prec_cost")
+
+    xl_prec_bytes = generar_excel_precosteo(df_calc, prec_ancho, prec_lit_top, prec_lit_dis, prec_gasoil, metodo_monte)
+    st.download_button(
+        label="📥 Descargar Planilla de Precosteo Actualizada para Gerencia (.xlsx)",
+        data=xl_prec_bytes,
+        file_name=f"Precosteo_Limpieza_2026_Zona_Centro_Calibrado.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        use_container_width=True,
+        key="dl_excel_precosteo"
+    )
+
+# =============================================================================
+# PESTAÑA 3: MAPA DE RED (REGIÓN CENTRO + MOTOR DE REBROTE CÍCLICO + SATÉLITE)
 # =============================================================================
 with tab_mapa:
     st.markdown("### 🗺️ Mapa de Red Georreferenciado — Región Operativa Centro")
@@ -1177,7 +1463,6 @@ with tab_mapa:
         df_map["area_m2"] = df_map["dist_m"] * ancho_serv_sel
         df_map["hectareas"] = df_map["area_m2"] / 10000.0
 
-        # Aplicar motor de rebrote cíclico desde la fecha satelital o de limpieza hasta fecha_evaluacion
         df_map["pct_vigente"] = [
             calcular_limpieza_vigente(r.pct_desmonte, r.fecha_limpieza, r.tipo_vegetacion, fecha_evaluacion)
             for r in df_map.itertuples()
@@ -1275,9 +1560,6 @@ with tab_mapa:
 
     st.divider()
 
-    # =========================================================================
-    # SECCIÓN OPERATIVA GPS Y REBROTE EN TIEMPO REAL
-    # =========================================================================
     subtab_campo, subtab_decl, subtab_imp, subtab_calc = st.tabs([
         "🚁 Actualización en Vivo (Cuadrilla 1 / Recorrido Dron)",
         "📍 Declarar / Editar Piquete GPS",
@@ -1285,7 +1567,6 @@ with tab_mapa:
         "📐 Calculadora por Tramo (m² y ha)"
     ])
 
-    # 1. ACTUALIZACIÓN RÁPIDA EN TIEMPO REAL POR RANGO DE PIQUETES
     with subtab_campo:
         st.markdown("##### 🚁 Calibración en Vivo de Vegetación por Tramo (Recorrido Dron / Visual / Desmonte)")
         st.caption("Usá este panel cuando la Cuadrilla 1 termina un tramo o cuando la Cuadrilla 4 (Recorrido Lento / Rápido / Dron) releva el estado real de rebrote.")
@@ -1322,7 +1603,6 @@ with tab_mapa:
                     st.toast(f"¡{cant_upd} piquetes actualizados en {rt_linea} con fecha {rt_fecha.strftime('%d/%m/%Y')}!", icon="🛰️")
                     st.rerun()
 
-    # 2. DECLARAR O EDITAR COORDENADAS MANUALMENTE
     with subtab_decl:
         st.markdown("##### 📍 Declarar Coordenadas GPS de Piquete (Latitud y Longitud)")
         with st.container(border=True):
@@ -1384,7 +1664,6 @@ with tab_mapa:
                     st.success(f"✅ Coordenada del Piquete {d_piq} ({d_linea}) guardada correctamente.")
                     st.rerun()
 
-    # 3. IMPORTADOR MASIVO DE EXCEL
     with subtab_imp:
         col_i1, col_i2 = st.columns(2)
 
@@ -1516,7 +1795,6 @@ with tab_mapa:
                 except Exception as e:
                     st.error(f"Error procesando planilla de desmonte: {e}")
 
-    # 4. CALCULADORA GEOMÉTRICA POR TRAMO DE PIQUETES
     with subtab_calc:
         st.markdown("##### 📐 Calculadora de Distancia, Superficie (m²) y Hectáreas entre Piquetes")
         if df_gps_all.empty:
@@ -1563,7 +1841,7 @@ with tab_mapa:
             rk4.metric("% Avance s/ Línea Total", f"{pct_sobre_linea:.2f}%", f"sobre {km_linea_cat} km")
 
 # =============================================================================
-# PESTAÑA 3: CRONOGRAMA SEMANAL (PLANIFICADO + EJECUCIÓN REAL DE CAMPO)
+# PESTAÑA 4: CRONOGRAMA SEMANAL (PLANIFICADO + EJECUCIÓN REAL DE CAMPO)
 # =============================================================================
 with tab_cronograma:
     incluir_reales_gantt = st.checkbox("🔗 Mostrar también ejecución real registrada en Perfilado y PAT en el cronograma", value=True, key="chk_reales_gantt")
@@ -1666,7 +1944,7 @@ with tab_cronograma:
         st.plotly_chart(fig_gantt, use_container_width=True, key="gantt_semanal_main")
 
 # =============================================================================
-# PESTAÑA 4: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
+# PESTAÑA 5: PROGRAMAR NUEVA ACTIVIDAD POR CUADRILLA
 # =============================================================================
 with tab_cargar:
     st.markdown("### ➕ Cargar Programación Real de Mantenimiento")
@@ -1729,7 +2007,7 @@ with tab_cargar:
             st.rerun()
 
 # =============================================================================
-# PESTAÑA 5: ACTUALIZAR AVANCE Y LIMPIAR DATOS
+# PESTAÑA 6: ACTUALIZAR AVANCE Y LIMPIAR DATOS
 # =============================================================================
 with tab_gestion:
     st.markdown("### ✏️ Actualizar Avances Reales y Reprogramaciones")
