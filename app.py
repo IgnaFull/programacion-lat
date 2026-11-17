@@ -445,6 +445,12 @@ def parsear_archivo_kml_kmz(file_bytes, filename):
                 if child.tag.endswith("name") and child.text:
                     nombre = child.text.strip()
                     break
+            
+            # Extraer también de ExtendedData / SimpleData si el nombre está vacío o trae ID
+            for sub in elem.iter():
+                if sub.tag.endswith("SimpleData") and sub.get("name") == "id" and sub.text:
+                    if not nombre or nombre.isdigit():
+                        nombre = sub.text.strip()
 
             for sub in elem.iter():
                 if sub.tag.endswith("Point"):
@@ -515,7 +521,8 @@ def extraer_id_piquete_de_nombre(nombre_str, set_piqs_validos):
     if s in set_piqs_validos:
         return s
 
-    m_piq = re.search(r"(?:piq\.?|piquete|id)\s*([0-9]+[a-zA-Z]?)", s, flags=re.IGNORECASE)
+    # Buscar si viene con prefijo o formato id / número directo
+    m_piq = re.search(r"(?:id[:\s]*|piq\.?|piquete[:\s]*)?\b([0-9]+[a-zA-Z]?)\b", s, flags=re.IGNORECASE)
     if m_piq and m_piq.group(1) in set_piqs_validos:
         return m_piq.group(1)
 
@@ -1933,7 +1940,7 @@ with tab_mapa:
                                 })
 
                         if not coincidencias:
-                            st.warning(f"Ningún marcador del KML coincide con los números de piquete de **{kml_linea_sel}** (nombrá cada pin como `1`, `45`, `Piq. 111b`, etc. en Google Earth).")
+                            st.warning(f"Ningún marcador del KML coincide con los números de piquete de **{kml_linea_sel}**.")
                         else:
                             df_prev_pts = pd.DataFrame([{k: v for k, v in c.items() if k != "_row"} for c in coincidencias])
                             st.dataframe(df_prev_pts, use_container_width=True, hide_index=True)
